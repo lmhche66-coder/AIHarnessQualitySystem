@@ -23,6 +23,7 @@ class ToolErrorKind(str, Enum):
     UPSTREAM = "upstream"
     NOT_FOUND = "not_found"
     ROLLBACK_FAILED = "rollback_failed"
+    CASSETTE_MISS = "cassette_miss"
 
 
 class ToolError(Exception):

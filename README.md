@@ -91,6 +91,38 @@ python -m agenteval run --cases my_cases.json --registry mytools.py:build_regist
 
 运行根目录可用 `--home` 或环境变量 `AGENTEVAL_HOME` 覆盖，便于 CI 与多环境隔离。
 
+## 录制与回放
+
+把工具交互录成 cassette，之后就能在没有外部服务、没有网络的环境里重复执行同一批用例。
+
+```bash
+# 录制：真实调用工具并写入 cassette
+python -m agenteval --home .agenteval run \
+  --cases examples/replayable_cases.json --demo \
+  --cassette demo --cassette-mode record
+
+# 回放：完全不触达真实工具
+python -m agenteval --home .agenteval run \
+  --cases examples/replayable_cases.json --demo \
+  --cassette demo --cassette-mode replay
+```
+
+`--cassette-mode` 必须显式指定，避免误覆盖已录制的 cassette：
+
+- `record`：真实调用并把结果写入 cassette；同名 cassette 已存在时会提示覆盖。
+- `replay`：只读 cassette。请求未录制时返回 `cassette_miss` 并把该用例判定为 error，绝不回退到真实工具。
+- `auto`：命中则回放，缺失则录制，适合本地开发。
+
+同一个请求反复出现时（例如限流重试），响应按录制顺序依次回放。录制结束后若有交互从未被消费，`run` 会在运行记录的 `metadata.cassette.unused` 中报告；加 `--strict-cassette` 则直接判定失败，用来守「agent 少调用了一步」这类回归。
+
+敏感字段默认按顶层字段名脱敏（`token`、`api_key`、`password`、`secret` 等），可用 `--redact FIELD` 追加。脱敏只作用于落盘内容，不影响指纹匹配。
+
+### 一个明确的边界：耗时相关契约不回放
+
+`timeout` 这类契约的结论取决于真实调用耗时，而 cassette 记录的是请求与响应。回放会让慢调用瞬间返回，若继续判定就会得到一个看似有效、实则无意义的结论。
+
+因此非录制模式下运行 `timeout` 用例会被直接判定为 error 并说明原因，而不是给出通过或失败。这类用例请在无 cassette 的情况下运行，或用 `--cassette-mode record` 跑真实调用。`examples/replayable_cases.json` 就是去掉耗时契约后的可回放集合。
+
 ## 在 pytest 里运行
 
 ```bash
@@ -115,8 +147,11 @@ def test_tool_contracts(tmp_path):
 ## 已知限制
 
 - 超时用线程执行器实现，无法强制中断阻塞中的原生调用。被测工具应提供可中断实现。
-- 运行目录会随运行次数增长，尚未提供清理与索引。
-- 本版本只覆盖第 1 层。轨迹级断言、LLM 裁判、端到端沙箱、CI 门禁、可观测与性能层均为后续变更。
+- 耗时相关契约（`timeout`）无法从 cassette 回放，非录制模式下会被显式拒绝。
+- 脱敏只覆盖顶层字段，嵌套结构内的敏感值需在工具层处理。
+- 并发调用下 cassette 的消费顺序不做保证，当前只支持单线程顺序消费。
+- 运行目录与 cassette 会随运行次数增长，尚未提供清理与索引。
+- 本版本覆盖第 1 层与回放骨架。轨迹级断言、LLM 裁判、端到端沙箱、CI 门禁、可观测与性能层均为后续变更。
 
 ## 规格来源
 

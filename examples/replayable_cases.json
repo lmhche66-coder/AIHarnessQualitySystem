@@ -1,0 +1,43 @@
+{
+  "cases": [
+    {
+      "id": "contract-missing-required",
+      "target": "echo_tool",
+      "description": "必填参数缺失时必须返回结构化校验错误",
+      "input": { "message": "hello" },
+      "check": { "kind": "missing_required", "drop": ["message"] }
+    },
+    {
+      "id": "contract-wrong-type",
+      "target": "echo_tool",
+      "description": "参数类型错误时必须返回结构化校验错误并指明字段",
+      "input": { "message": "hello", "count": 2 },
+      "check": { "kind": "wrong_type", "overrides": { "count": "not-an-integer" } }
+    },
+    {
+      "id": "contract-rate-limit",
+      "target": "rate_limited_tool",
+      "description": "限流后必须在重试上限内退避成功",
+      "input": {},
+      "check": { "kind": "rate_limit", "max_attempts": 5, "expect_success": true }
+    },
+    {
+      "id": "contract-idempotent",
+      "target": "idempotent_tool",
+      "description": "相同幂等键重复调用只能产生一次副作用",
+      "input": {},
+      "check": { "kind": "idempotent_retry", "idempotency_key": "order-1", "repeat": 2 }
+    },
+    {
+      "id": "contract-partial-rollback",
+      "target": "payout_tool",
+      "description": "多步操作中途失败必须回滚已完成步骤",
+      "input": {},
+      "check": {
+        "kind": "partial_rollback",
+        "steps": ["reserve", "capture", "settle"],
+        "fail_at": "capture"
+      }
+    }
+  ]
+}
