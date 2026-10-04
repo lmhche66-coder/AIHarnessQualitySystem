@@ -90,6 +90,12 @@ def extract_tool_calls(trace: Trace) -> list[ToolCall]:
     return calls
 
 
+def process_handler(kind: str) -> Callable[[Any, list[ToolCall]], list[CheckOutcome]] | None:
+    """按检查类型取出过程断言处理器，供任务层复用。"""
+
+    return _HANDLERS.get(kind)
+
+
 @dataclass
 class TraceSession:
     """把当前用例的轨迹暴露给工具包装器。"""

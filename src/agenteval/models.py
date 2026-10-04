@@ -172,9 +172,43 @@ class ProcessCase(BaseModel):
     checks: list[ProcessCheckSpec] = Field(default_factory=list)
 
 
-# 两类用例的必填字段互斥，且都禁止未声明字段，因此用智能联合即可区分；
+class FinalStateCheck(BaseModel):
+    """断言环境中的最终状态等于期望值。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["final_state"] = "final_state"
+    tool: str = ""
+    field: str = ""
+    expected: Any = None
+
+
+TaskCheckSpec = Annotated[
+    Union[
+        ToolSequenceCheck,
+        NoExtraCallsCheck,
+        RecoveryCheck,
+        StateContinuityCheck,
+        FinalStateCheck,
+    ],
+    Field(discriminator="kind"),
+]
+
+
+class TaskCase(BaseModel):
+    """一条端到端任务：在干净环境里由 agent 尝试完成，再按判据判定是否解决。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    kind: Literal["task"] = "task"
+    description: str | None = None
+    checks: list[TaskCheckSpec] = Field(default_factory=list)
+
+
+# 各类用例的必填字段互斥，且都禁止未声明字段，因此用智能联合即可区分；
 # 这样既支持显式声明 kind，也保持既有未声明 kind 的用例文件可用。
-AnyCase = Union[Case, ProcessCase]
+AnyCase = Union[Case, ProcessCase, TaskCase]
 
 
 class CheckOutcome(BaseModel):

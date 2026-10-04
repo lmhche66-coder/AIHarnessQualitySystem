@@ -21,6 +21,7 @@ from agenteval.models import (
     ProcessCase,
     Run,
     Status,
+    TaskCase,
     Trace,
     Verdict,
 )
@@ -72,7 +73,12 @@ def load_cases(path: Path) -> list[AnyCase]:
     else:
         payload = json.loads(text)
     if isinstance(payload, dict):
-        payload = payload.get("cases", [])
+        if "cases" not in payload:
+            found = ", ".join(sorted(payload)) or "none"
+            raise ValueError(
+                f"cases file must contain a list or a 'cases' key: {path} (found keys: {found})"
+            )
+        payload = payload["cases"]
     if not isinstance(payload, list):
         raise ValueError(f"cases file must contain a list or a 'cases' key: {path}")
     return [_ANY_CASE_ADAPTER.validate_python(item) for item in payload]
@@ -113,6 +119,12 @@ class ContractRunner:
         return Trace(case_id=case.id)
 
     def _evaluate(self, case: AnyCase, trace: Trace) -> Verdict:
+        if isinstance(case, TaskCase):
+            return Verdict(
+                case_id=case.id,
+                status=Status.ERROR,
+                error="task cases must be run with 'agenteval task run', not 'agenteval run'",
+            )
         if isinstance(case, ProcessCase):
             return self._evaluate_process(case, trace)
         blocked = _non_replayable_reason(case, self.cassette_session)

@@ -154,3 +154,41 @@ def build_demo_registry() -> ToolRegistry:
             PartialFailureTool(),
         ]
     )
+
+
+class LedgerTool(SchemaTool):
+    """带可观测状态的示例账本，用于端到端任务的成功判据。"""
+
+    name = "ledger_tool"
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "enum": ["charge", "refund", "settle"]},
+            "amount": {"type": "integer", "minimum": 0},
+        },
+        "required": ["op"],
+        "additionalProperties": False,
+    }
+
+    def __init__(self) -> None:
+        self.balance = 0
+        self.entries: list[dict[str, Any]] = []
+
+    def state(self) -> dict[str, Any]:
+        """暴露可被终态断言读取的状态。"""
+
+        return {"balance": self.balance, "entries": len(self.entries)}
+
+    def run(self, op: str, amount: int = 0, **kwargs: Any) -> ToolResult:
+        if op == "charge":
+            self.balance += amount
+        elif op == "refund":
+            self.balance -= amount
+        self.entries.append({"op": op, "amount": amount})
+        return ToolResult(ok=True, value={"balance": self.balance, "entries": len(self.entries)})
+
+
+def build_task_registry() -> ToolRegistry:
+    """端到端任务用的干净环境：每次调用都返回互不影响的实例。"""
+
+    return ToolRegistry([LedgerTool()])

@@ -53,3 +53,11 @@ jobs:
           python -m agenteval --home .agenteval run \
             --cases examples/import_cases.json --demo --trace checkout
           python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0
+
+      - name: Run end-to-end tasks
+        run: |
+          python -m agenteval --home .agenteval task run \
+            --tasks examples/tasks.json \
+            --registry agenteval.fakes:build_task_registry \
+            --agent examples/demo_agent.py:build_agent
+          python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0

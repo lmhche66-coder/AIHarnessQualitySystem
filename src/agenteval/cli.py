@@ -7,8 +7,10 @@ import importlib
 import importlib.util
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from agenteval.cassette import (
     CASSETTES_DIRNAME,
@@ -32,6 +34,7 @@ from agenteval.gate import (
 from agenteval.models import Run
 from agenteval.runner import ContractRunner, load_cases
 from agenteval.store import RUNS_DIRNAME, RunStore
+from agenteval.tasks import TaskRunner, load_tasks
 from agenteval.trace_store import TRACES_DIRNAME, TraceStore, extract_trace
 from agenteval.tools import ToolRegistry
 
@@ -122,6 +125,22 @@ def build_parser() -> argparse.ArgumentParser:
     trace_save_parser.add_argument("--case", dest="case_id", help="case id whose trace to capture")
     trace_list_parser = trace_subparsers.add_parser("list", help="list stored traces")
     trace_list_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    task_parser = subparsers.add_parser("task", help="run end-to-end tasks")
+    task_subparsers = task_parser.add_subparsers(dest="task_command", required=True)
+    task_run_parser = task_subparsers.add_parser("run", help="execute tasks against an agent")
+    task_run_parser.add_argument("--tasks", type=Path, required=True, help="path to a JSON or YAML tasks file")
+    task_run_parser.add_argument(
+        "--registry",
+        required=True,
+        help="environment factory as 'package.module:factory' or 'path/to/module.py:factory'",
+    )
+    task_run_parser.add_argument(
+        "--agent",
+        required=True,
+        help="agent factory as 'package.module:factory' or 'path/to/module.py:factory'",
+    )
+    task_run_parser.add_argument("--json", action="store_true", help="emit the task report as JSON")
     return parser
 
 
@@ -140,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_gate(args, store)
     if args.command == "trace":
         return _cmd_trace(args, store)
+    if args.command == "task":
+        return _cmd_task(args, store)
     return 2
 
 
@@ -168,7 +189,11 @@ def _cmd_run(args: argparse.Namespace, store: RunStore) -> int:
             print(str(exc), file=sys.stderr)
             return 2
 
-    cases = load_cases(args.cases)
+    try:
+        cases = load_cases(args.cases)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     registry = build_demo_registry() if args.demo else load_registry(args.registry)
     session = _build_session(args)
     if session is not None:
@@ -366,6 +391,72 @@ def _trace_store_from_args(args: argparse.Namespace) -> TraceStore:
     return TraceStore.default()
 
 
+def _cmd_task(args: argparse.Namespace, store: RunStore) -> int:
+    if args.task_command == "run":
+        return _cmd_task_run(args, store)
+    return 2
+
+
+def _cmd_task_run(args: argparse.Namespace, store: RunStore) -> int:
+    try:
+        tasks = load_tasks(args.tasks)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    environment = load_factory(args.registry, "registry")
+    agent_factory = load_factory(args.agent, "agent")
+
+    def agent(registry: ToolRegistry, task: Any) -> None:
+        # 每个任务重建一次 agent，使 agent 自身的状态也不会跨任务残留
+        runner = agent_factory()
+        if not callable(runner):
+            raise TypeError("agent factory must return a callable agent")
+        runner(registry, task)
+
+    runner = TaskRunner(agent=agent, environment=environment, store=store)
+    run = runner.run(
+        tasks,
+        metadata={
+            "tasks_file": str(args.tasks),
+            "registry": args.registry,
+            "agent": args.agent,
+        },
+    )
+    report: dict[str, Any] = run.metadata.get("task_report") or {}
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if _all_tasks_resolved(report) else 1
+    _print_task_run(run, report)
+    return 0 if _all_tasks_resolved(report) else 1
+
+
+def _all_tasks_resolved(report: dict[str, Any]) -> bool:
+    """空任务集不算通过，避免在空集上拿到满分。"""
+
+    total = report.get("total") or 0
+    return bool(total) and report.get("resolved") == total
+
+
+def _print_task_run(run: Run, report: dict[str, Any]) -> None:
+    print(f"run_id: {run.run_id}")
+    print(
+        f"tasks: {report.get('total', 0)}  resolved: {report.get('resolved', 0)}  "
+        f"resolved_rate: {report.get('resolved_rate', 0.0):.4f}"
+    )
+    for verdict in run.verdicts:
+        print(f"  [{verdict.status.value:<5}] {verdict.case_id}  ({verdict.duration_ms:.1f} ms)")
+        for check in verdict.failed_checks:
+            print(f"         - {check.name}: {check.message or 'check failed'}")
+        if verdict.error:
+            print(f"         - error: {verdict.error}")
+    unresolved = report.get("unresolved_tasks") or []
+    errored = report.get("errored_tasks") or []
+    if unresolved:
+        print(f"unresolved: {', '.join(unresolved)}")
+    if errored:
+        print(f"errored: {', '.join(errored)}")
+
+
 def _print_run(run: Run) -> None:
     summary = run.summary
     print(f"run_id: {run.run_id}")
@@ -392,17 +483,29 @@ def _print_run(run: Run) -> None:
 def load_registry(ref: str | None) -> ToolRegistry:
     """按 ``module:factory`` 或 ``path/to/module.py:factory`` 载入工具注册表。"""
 
+    factory = load_factory(ref, "registry")
+    registry = factory()
+    if not isinstance(registry, ToolRegistry):
+        raise SystemExit("registry factory must return a ToolRegistry instance")
+    return registry
+
+
+def load_factory(ref: str | None, label: str) -> Callable[..., object]:
+    """载入工厂函数本身，而不是它的调用结果。
+
+    任务环境需要每个任务重建一次，因此这里必须拿到可重复调用的工厂。
+    """
+
     if not ref or ":" not in ref:
-        raise SystemExit("--registry must look like 'package.module:factory' or 'path/to/module.py:factory'")
+        raise SystemExit(f"--{label} must look like 'package.module:factory' or 'path/to/module.py:factory'")
     target, _, attribute = ref.rpartition(":")
     module = _load_module(Path(target)) if _looks_like_path(target) else importlib.import_module(target)
     factory = getattr(module, attribute, None)
     if factory is None:
-        raise SystemExit(f"registry factory not found: {attribute}")
-    registry = factory() if callable(factory) else factory
-    if not isinstance(registry, ToolRegistry):
-        raise SystemExit("registry factory must return a ToolRegistry instance")
-    return registry
+        raise SystemExit(f"{label} factory not found: {attribute}")
+    if not callable(factory):
+        raise SystemExit(f"{label} factory must be callable: {attribute}")
+    return factory
 
 
 def _looks_like_path(target: str) -> bool:

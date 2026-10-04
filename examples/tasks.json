@@ -1,0 +1,27 @@
+{
+  "tasks": [
+    {
+      "id": "task-charge-and-settle",
+      "kind": "task",
+      "description": "扣款并结算后，账本余额必须等于扣款额",
+      "checks": [
+        {
+          "kind": "tool_sequence",
+          "expected": ["ledger_tool", "ledger_tool"],
+          "mode": "subsequence"
+        },
+        { "kind": "no_extra_calls", "allowed": ["ledger_tool"] },
+        { "kind": "final_state", "tool": "ledger_tool", "field": "balance", "expected": 30 }
+      ]
+    },
+    {
+      "id": "task-refund-reduces-balance",
+      "kind": "task",
+      "description": "扣款后部分退款，账本余额必须等于净额",
+      "checks": [
+        { "kind": "no_extra_calls", "allowed": ["ledger_tool"] },
+        { "kind": "final_state", "tool": "ledger_tool", "field": "balance", "expected": 70 }
+      ]
+    }
+  ]
+}

@@ -254,6 +254,51 @@ python -m agenteval --home .agenteval gate
 
 两个来源互斥：一条过程用例既声明步骤、又引用外部轨迹会被判 error，而不是让系统替你选一个。引用的轨迹不存在时直接报错并终止，不会留下一次没有意义的运行。
 
+## 端到端任务成功率
+
+前面几层回答的是「工具对不对、过程对不对」。业务方只关心一个问题：一批真实任务里做成了几件。
+
+任务只描述要达成什么，agent 的解法不写进任务定义：
+
+```json
+{
+  "id": "task-charge-and-settle",
+  "kind": "task",
+  "description": "扣款并结算后，账本余额必须等于扣款额",
+  "checks": [
+    { "kind": "tool_sequence", "expected": ["ledger_tool", "ledger_tool"], "mode": "subsequence" },
+    { "kind": "no_extra_calls", "allowed": ["ledger_tool"] },
+    { "kind": "final_state", "tool": "ledger_tool", "field": "balance", "expected": 30 }
+  ]
+}
+```
+
+成功判据分两类：过程断言（复用轨迹层）与 `final_state` 终态断言。终态断言读取工具暴露的 `state()` 并与期望值比较；工具未注册、没有 `state()`、字段不存在都判失败并说明原因，而不是抛异常。
+
+```bash
+python -m agenteval --home .agenteval task run \
+  --tasks examples/tasks.json \
+  --registry agenteval.fakes:build_task_registry \
+  --agent examples/demo_agent.py:build_agent
+```
+
+```
+run_id: 20261004T092700Z-1a2b3c4d
+tasks: 2  resolved: 2  resolved_rate: 1.0000
+  [pass ] task-charge-and-settle  (1.2 ms)
+  [pass ] task-refund-reduces-balance  (0.9 ms)
+```
+
+关键约束是环境隔离：环境由工厂构建，**每个任务开始前重建一次**，agent 也每个任务重建一次。这是通过率可信的前提，环境不稳定时通过率本身就是噪声。
+
+agent 抛异常记为 error（没跑起来），判据不满足记为未解决（跑了但没做对），两者分开列出，因为排查方向完全不同。全部任务解决时退出码为 0，否则为 1；空任务集不算通过，避免在空集上拿到满分。
+
+任务结果就是普通的 Verdict 与运行记录，因此门禁零改动即可覆盖任务成功率：
+
+```bash
+python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0
+```
+
 ## 在 pytest 里运行
 
 ```bash
@@ -282,7 +327,8 @@ def test_tool_contracts(tmp_path):
 - 脱敏只覆盖顶层字段，嵌套结构内的敏感值需在工具层处理。
 - 并发调用下 cassette 的消费顺序不做保证，当前只支持单线程顺序消费。
 - 运行目录与 cassette 会随运行次数增长，尚未提供清理与索引。
-- 本版本覆盖工具契约层、确定性回放与质量门禁。轨迹级断言、LLM 裁判、端到端沙箱、可观测与性能层均为后续变更。
+- 本版本覆盖工具契约层、确定性回放、轨迹与过程断言、质量门禁与端到端任务成功率。LLM 裁判、可观测、性能与多端层均为后续变更。
+- 端到端任务只做单次执行统计，不做重复尝试与 pass@k；环境隔离靠工厂重建，尚未提供快照恢复。
 
 ## 规格来源
 
