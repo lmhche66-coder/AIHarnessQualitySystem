@@ -20,6 +20,15 @@ from agenteval.cassette import (
     wrap_registry,
 )
 from agenteval.fakes import build_demo_registry
+from agenteval.gate import (
+    BASELINES_DIRNAME,
+    DEFAULT_BASELINE_NAME,
+    Baseline,
+    BaselineStore,
+    GateThresholds,
+    evaluate,
+    format_report,
+)
 from agenteval.models import Run
 from agenteval.runner import ContractRunner, load_cases
 from agenteval.store import RUNS_DIRNAME, RunStore
@@ -72,6 +81,31 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser("show", help="show a stored run")
     show_parser.add_argument("run_id")
     show_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    baseline_parser = subparsers.add_parser(
+        "baseline", help="capture a stored run as the gate baseline"
+    )
+    baseline_parser.add_argument("--run", dest="run_id", help="run id (default: latest)")
+    baseline_parser.add_argument("--name", help=f"baseline name (default: {DEFAULT_BASELINE_NAME})")
+    baseline_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    gate_parser = subparsers.add_parser(
+        "gate", help="evaluate a stored run against thresholds and the baseline"
+    )
+    gate_parser.add_argument("--run", dest="run_id", help="run id (default: latest)")
+    gate_parser.add_argument("--name", help=f"baseline name (default: {DEFAULT_BASELINE_NAME})")
+    gate_parser.add_argument(
+        "--min-pass-rate", type=float, default=1.0, help="minimum pass rate (default: 1.0)"
+    )
+    gate_parser.add_argument(
+        "--max-errors", type=int, default=0, help="maximum errored cases (default: 0)"
+    )
+    gate_parser.add_argument(
+        "--allow-regressions",
+        action="store_true",
+        help="do not fail the gate on regressions or missing cases",
+    )
+    gate_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -84,6 +118,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_list(args, store)
     if args.command == "show":
         return _cmd_show(args, store)
+    if args.command == "baseline":
+        return _cmd_baseline(args, store)
+    if args.command == "gate":
+        return _cmd_gate(args, store)
     return 2
 
 
@@ -181,6 +219,71 @@ def _cmd_show(args: argparse.Namespace, store: RunStore) -> int:
     else:
         _print_run(run)
     return 0
+
+
+def _cmd_baseline(args: argparse.Namespace, store: RunStore) -> int:
+    run_id = args.run_id or _latest_run_id(store)
+    if run_id is None:
+        print("no runs recorded", file=sys.stderr)
+        return 2
+    try:
+        run = store.load(run_id)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    baseline = Baseline.from_run(run, name=args.name or DEFAULT_BASELINE_NAME)
+    path = _baseline_store_from_args(args).save(baseline)
+    if args.json:
+        print(baseline.model_dump_json(indent=2))
+    else:
+        print(f"baseline '{baseline.name}' captured from run {baseline.run_id}")
+        print(f"cases: {len(baseline.verdicts)}")
+        print(f"stored: {path}")
+    return 0
+
+
+def _cmd_gate(args: argparse.Namespace, store: RunStore) -> int:
+    run_id = args.run_id or _latest_run_id(store)
+    if run_id is None:
+        print("no runs recorded", file=sys.stderr)
+        return 2
+    try:
+        run = store.load(run_id)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    baseline_name = args.name or DEFAULT_BASELINE_NAME
+    baseline = _baseline_store_from_args(args).load(baseline_name)
+    if args.name is not None and baseline is None:
+        print(f"baseline not found: {baseline_name}", file=sys.stderr)
+        return 2
+
+    result = evaluate(
+        run,
+        baseline=baseline,
+        thresholds=GateThresholds(
+            min_pass_rate=args.min_pass_rate,
+            max_errors=args.max_errors,
+        ),
+        allow_regressions=args.allow_regressions,
+    )
+    if args.json:
+        print(result.model_dump_json(indent=2))
+    else:
+        print(format_report(result))
+    return 0 if result.passed else 1
+
+
+def _latest_run_id(store: RunStore) -> str | None:
+    run_ids = store.list_runs()
+    return run_ids[-1] if run_ids else None
+
+
+def _baseline_store_from_args(args: argparse.Namespace) -> BaselineStore:
+    if args.home is not None:
+        return BaselineStore(Path(args.home) / BASELINES_DIRNAME)
+    return BaselineStore.default()
 
 
 def _print_run(run: Run) -> None:

@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+
+      - name: Tests
+        run: python -m pytest
+
+      - name: Record cassette
+        run: >-
+          python -m agenteval --home .agenteval run
+          --cases examples/replayable_cases.json --demo
+          --cassette demo --cassette-mode record
+
+      - name: Capture baseline
+        run: python -m agenteval --home .agenteval baseline
+
+      - name: Replay and gate
+        run: |
+          python -m agenteval --home .agenteval run \
+            --cases examples/replayable_cases.json --demo \
+            --cassette demo --cassette-mode replay
+          python -m agenteval --home .agenteval gate

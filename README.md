@@ -123,6 +123,33 @@ python -m agenteval --home .agenteval run \
 
 因此非录制模式下运行 `timeout` 用例会被直接判定为 error 并说明原因，而不是给出通过或失败。这类用例请在无 cassette 的情况下运行，或用 `--cassette-mode record` 跑真实调用。`examples/replayable_cases.json` 就是去掉耗时契约后的可回放集合。
 
+## 质量门禁
+
+门禁回答三个问题：有没有基线、有没有阈值、低于阈值能不能自动拦住。
+
+```bash
+# 把最近一次运行捕获为基线
+python -m agenteval --home .agenteval baseline
+
+# 对最近一次运行做门禁判定
+python -m agenteval --home .agenteval gate
+```
+
+门禁有两类互相独立的条件，任一类不满足都会不通过：
+
+- 阈值：`--min-pass-rate`（默认 1.0）与 `--max-errors`（默认 0），回答「这次的绝对水平够不够」
+- 回归：基线中通过但当前失败或错误的用例，以及基线中存在、当前缺失的用例，回答「这次比上次差了没有」
+
+```bash
+python -m agenteval --home .agenteval gate --json                        # 机器可读报告
+python -m agenteval --home .agenteval gate --min-pass-rate 0.95 --max-errors 0
+python -m agenteval --home .agenteval gate --allow-regressions           # 豁免回归，但仍会列出
+```
+
+退出码：通过为 0，不通过为 1，用法错误为 2。没有基线时只按阈值判定，并在报告中标注 `baseline: none`，不会因为缺基线就直接失败；但显式指定了某个不存在的基线名会报错，避免误以为比对过了。
+
+CI 工作流在 `.github/workflows/ci.yml`，依次跑测试、录制 cassette、捕获基线、回放并执行门禁，最后一步的退出码就是整个 job 的结论。
+
 ## 在 pytest 里运行
 
 ```bash
@@ -151,7 +178,7 @@ def test_tool_contracts(tmp_path):
 - 脱敏只覆盖顶层字段，嵌套结构内的敏感值需在工具层处理。
 - 并发调用下 cassette 的消费顺序不做保证，当前只支持单线程顺序消费。
 - 运行目录与 cassette 会随运行次数增长，尚未提供清理与索引。
-- 本版本覆盖第 1 层与回放骨架。轨迹级断言、LLM 裁判、端到端沙箱、CI 门禁、可观测与性能层均为后续变更。
+- 本版本覆盖工具契约层、确定性回放与质量门禁。轨迹级断言、LLM 裁判、端到端沙箱、可观测与性能层均为后续变更。
 
 ## 规格来源
 
