@@ -24,6 +24,7 @@ from agenteval.tools import (
     ToolRegistry,
     ToolResult,
 )
+from agenteval.trace_store import TraceStore
 
 __version__ = "0.1.0"
 
@@ -41,6 +42,7 @@ __all__ = [
     "ToolErrorKind",
     "ToolRegistry",
     "ToolResult",
+    "TraceStore",
     "Trace",
     "TraceEvent",
     "Verdict",

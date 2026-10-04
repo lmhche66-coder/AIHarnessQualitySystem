@@ -205,6 +205,55 @@ verdict = check_process_case(my_process_case, trace)
 
 注意工具实例在整轮运行中是共享的，有状态的桩件会跨用例累积状态。示例用例因此只使用结果不依赖历史调用的工具；真实工具本就如此，用例设计时要把这一点考虑进去。
 
+### 把真实轨迹变成可复用的评测资产
+
+过程用例默认由运行器驱动步骤。要在没有 agent、没有外部服务的环境里复评一份真实轨迹，先把轨迹存下来再对它求值。
+
+在自己的 agent 里记录并保存：
+
+```python
+from agenteval.models import Trace
+from agenteval.process import TraceSession, wrap_registry_for_trace
+from agenteval.trace_store import TraceStore
+
+session = TraceSession()
+registry = wrap_registry_for_trace(my_registry, session)
+trace = Trace(case_id="checkout-flow")
+session.begin_case(trace)
+run_my_agent(registry)
+session.end_case()
+
+TraceStore.default().save("checkout-flow", trace, source="manual")
+```
+
+也可以直接从一次已存储的运行里提取：
+
+```bash
+python -m agenteval --home .agenteval trace save --name checkout --run <run_id> --case <case_id>
+python -m agenteval --home .agenteval trace list
+```
+
+这类用例只声明断言、不声明步骤：
+
+```json
+{
+  "id": "checkout-flow",
+  "kind": "process",
+  "checks": [
+    { "kind": "tool_sequence", "expected": ["create_order", "pay", "ship"], "mode": "subsequence" }
+  ]
+}
+```
+
+```bash
+python -m agenteval --home .agenteval run --cases examples/import_cases.json --demo --trace checkout
+python -m agenteval --home .agenteval gate
+```
+
+对已保存轨迹求值时不调用任何工具，结论不受环境影响，可以直接进 CI。运行记录会标注所用的轨迹名称，判定所依据的那条轨迹也随运行落盘，便于事后复查。
+
+两个来源互斥：一条过程用例既声明步骤、又引用外部轨迹会被判 error，而不是让系统替你选一个。引用的轨迹不存在时直接报错并终止，不会留下一次没有意义的运行。
+
 ## 在 pytest 里运行
 
 ```bash

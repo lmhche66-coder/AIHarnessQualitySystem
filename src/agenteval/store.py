@@ -92,6 +92,34 @@ class RunStore:
             return []
         return sorted(entry.name for entry in self.runs_dir.iterdir() if entry.is_dir())
 
+    def latest_run_id(self) -> str | None:
+        """按记录的开始时间返回最近一次运行。
+
+        运行标识默认可按字典序排列，但标识允许用户指定，因此不能靠名字排序判断
+        先后；这里读取每条运行的汇总记录取时间。
+        """
+
+        run_ids = self.list_runs()
+        latest_id: str | None = None
+        latest_started: object = None
+        for run_id in run_ids:
+            summary_path = self.run_dir(run_id) / SUMMARY_FILENAME
+            if not summary_path.is_file():
+                continue
+            try:
+                started = Run.model_validate_json(
+                    summary_path.read_text(encoding="utf-8")
+                ).started_at
+            except ValueError:
+                continue
+            # 时间并列时按名称顺序取后者，保证结论确定
+            if latest_started is None or started >= latest_started:  # type: ignore[operator]
+                latest_started = started
+                latest_id = run_id
+        if latest_id is None:
+            return run_ids[-1] if run_ids else None
+        return latest_id
+
 
 def _write_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")

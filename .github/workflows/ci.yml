@@ -43,3 +43,13 @@ jobs:
             --cases examples/process_cases.json --demo \
             --cassette process --cassette-mode replay
           python -m agenteval --home .agenteval gate --name process
+
+      - name: Evaluate a stored trace
+        run: |
+          python -m agenteval --home .agenteval run \
+            --cases examples/process_cases.json --demo
+          python -m agenteval --home .agenteval trace save \
+            --name checkout --case process-exact-sequence
+          python -m agenteval --home .agenteval run \
+            --cases examples/import_cases.json --demo --trace checkout
+          python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0

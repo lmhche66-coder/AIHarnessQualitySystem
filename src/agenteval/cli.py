@@ -32,6 +32,7 @@ from agenteval.gate import (
 from agenteval.models import Run
 from agenteval.runner import ContractRunner, load_cases
 from agenteval.store import RUNS_DIRNAME, RunStore
+from agenteval.trace_store import TRACES_DIRNAME, TraceStore, extract_trace
 from agenteval.tools import ToolRegistry
 
 
@@ -57,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="registry factory as 'package.module:factory' or 'path/to/module.py:factory'",
     )
     run_parser.add_argument("--cassette", help="cassette name for recording or replay")
+    run_parser.add_argument(
+        "--trace",
+        help="evaluate process cases against a stored trace instead of driving their steps",
+    )
     run_parser.add_argument(
         "--cassette-mode",
         choices=[mode.value for mode in CassetteMode],
@@ -106,6 +111,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="do not fail the gate on regressions or missing cases",
     )
     gate_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    trace_parser = subparsers.add_parser("trace", help="manage stored traces")
+    trace_subparsers = trace_parser.add_subparsers(dest="trace_command", required=True)
+    trace_save_parser = trace_subparsers.add_parser(
+        "save", help="capture a trace from a stored run"
+    )
+    trace_save_parser.add_argument("--name", required=True, help="trace name to write")
+    trace_save_parser.add_argument("--run", dest="run_id", help="run id (default: latest)")
+    trace_save_parser.add_argument("--case", dest="case_id", help="case id whose trace to capture")
+    trace_list_parser = trace_subparsers.add_parser("list", help="list stored traces")
+    trace_list_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -122,6 +138,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_baseline(args, store)
     if args.command == "gate":
         return _cmd_gate(args, store)
+    if args.command == "trace":
+        return _cmd_trace(args, store)
     return 2
 
 
@@ -141,6 +159,14 @@ def _cmd_run(args: argparse.Namespace, store: RunStore) -> int:
             file=sys.stderr,
         )
         return 2
+
+    trace_override = None
+    if args.trace:
+        try:
+            trace_override = _trace_store_from_args(args).load(args.trace)
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
 
     cases = load_cases(args.cases)
     registry = build_demo_registry() if args.demo else load_registry(args.registry)
@@ -162,7 +188,13 @@ def _cmd_run(args: argparse.Namespace, store: RunStore) -> int:
         metadata["cassette_name"] = session.cassette.name
         metadata["cassette_mode"] = session.mode.value
 
-    runner = ContractRunner(registry=registry, store=store, cassette_session=session)
+    runner = ContractRunner(
+        registry=registry,
+        store=store,
+        cassette_session=session,
+        trace_override=trace_override,
+        trace_name=args.trace,
+    )
     run = runner.run(cases, metadata=metadata)
     _print_run(run)
     return 0 if run.summary.failed == 0 and run.summary.errored == 0 else 1
@@ -276,14 +308,62 @@ def _cmd_gate(args: argparse.Namespace, store: RunStore) -> int:
 
 
 def _latest_run_id(store: RunStore) -> str | None:
-    run_ids = store.list_runs()
-    return run_ids[-1] if run_ids else None
+    return store.latest_run_id()
 
 
 def _baseline_store_from_args(args: argparse.Namespace) -> BaselineStore:
     if args.home is not None:
         return BaselineStore(Path(args.home) / BASELINES_DIRNAME)
     return BaselineStore.default()
+
+
+def _cmd_trace(args: argparse.Namespace, store: RunStore) -> int:
+    if args.trace_command == "save":
+        return _cmd_trace_save(args, store)
+    if args.trace_command == "list":
+        return _cmd_trace_list(args)
+    return 2
+
+
+def _cmd_trace_save(args: argparse.Namespace, store: RunStore) -> int:
+    run_id = args.run_id or _latest_run_id(store)
+    if run_id is None:
+        print("no runs recorded", file=sys.stderr)
+        return 2
+    try:
+        run = store.load(run_id)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        trace = extract_trace(run, args.case_id)
+    except KeyError as exc:
+        print(exc.args[0] if exc.args else exc, file=sys.stderr)
+        return 2
+    path = _trace_store_from_args(args).save(args.name, trace, source=f"run:{run.run_id}")
+    print(f"trace '{args.name}' captured from run {run.run_id} (case {trace.case_id})")
+    print(f"events: {len(trace.events)}")
+    print(f"stored: {path}")
+    return 0
+
+
+def _cmd_trace_list(args: argparse.Namespace) -> int:
+    names = _trace_store_from_args(args).list_traces()
+    if args.json:
+        print(json.dumps(names, ensure_ascii=False))
+        return 0
+    if not names:
+        print("no traces recorded")
+        return 0
+    for name in names:
+        print(name)
+    return 0
+
+
+def _trace_store_from_args(args: argparse.Namespace) -> TraceStore:
+    if args.home is not None:
+        return TraceStore(Path(args.home) / TRACES_DIRNAME)
+    return TraceStore.default()
 
 
 def _print_run(run: Run) -> None:

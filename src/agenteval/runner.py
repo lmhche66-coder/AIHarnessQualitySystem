@@ -31,6 +31,12 @@ from agenteval.tools import ToolErrorKind, ToolRegistry, ToolResult
 _ANY_CASE_ADAPTER: TypeAdapter[AnyCase] = TypeAdapter(AnyCase)
 
 
+def _key_error_text(exc: KeyError) -> str:
+    """``str(KeyError)`` 会给消息加上引号，这里取回原始文本。"""
+
+    return str(exc.args[0]) if exc.args else str(exc)
+
+
 def new_run_id() -> str:
     """生成按时间排序且唯一的运行标识。"""
 
@@ -80,11 +86,13 @@ class ContractRunner:
     store: RunStore | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     cassette_session: CassetteSession | None = None
+    trace_override: Trace | None = None
+    trace_name: str | None = None
 
     def run_case(self, case: AnyCase) -> tuple[Verdict, Trace]:
         """执行单条用例，返回判定与轨迹。"""
 
-        trace = Trace(case_id=case.id)
+        trace = self._trace_for(case)
         session = self.cassette_session
         if session is not None:
             session.begin_case(trace)
@@ -96,6 +104,13 @@ class ContractRunner:
                 session.end_case()
         verdict.duration_ms = round((time.perf_counter() - start) * 1000, 3)
         return verdict, trace
+
+    def _trace_for(self, case: AnyCase) -> Trace:
+        """过程用例引用外部轨迹时直接复用它，其余情况为用例新建一条空轨迹。"""
+
+        if isinstance(case, ProcessCase) and self.trace_override is not None:
+            return self.trace_override
+        return Trace(case_id=case.id)
 
     def _evaluate(self, case: AnyCase, trace: Trace) -> Verdict:
         if isinstance(case, ProcessCase):
@@ -111,7 +126,7 @@ class ContractRunner:
         try:
             tool = self.registry.get(case.target)
         except KeyError as exc:
-            return Verdict(case_id=case.id, status=Status.ERROR, error=str(exc))
+            return Verdict(case_id=case.id, status=Status.ERROR, error=_key_error_text(exc))
         try:
             return check_case(case, tool, trace)
         except Exception as exc:  # noqa: BLE001 - 单条用例失败不终止整轮运行
@@ -122,11 +137,38 @@ class ContractRunner:
             )
 
     def _evaluate_process(self, case: ProcessCase, trace: Trace) -> Verdict:
+        if self.trace_override is not None:
+            if case.steps:
+                return Verdict(
+                    case_id=case.id,
+                    status=Status.ERROR,
+                    error=(
+                        "process case declares steps but a stored trace was supplied; "
+                        "use exactly one trace source"
+                    ),
+                )
+            try:
+                return check_process_case(case, trace)
+            except Exception as exc:  # noqa: BLE001 - 单条用例失败不终止整轮运行
+                return Verdict(
+                    case_id=case.id,
+                    status=Status.ERROR,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+        if not case.steps:
+            return Verdict(
+                case_id=case.id,
+                status=Status.ERROR,
+                error=(
+                    "process case declares no steps and no stored trace was supplied; "
+                    "add steps or run with --trace"
+                ),
+            )
         try:
             self._run_process_steps(case, trace)
             return check_process_case(case, trace)
         except KeyError as exc:
-            return Verdict(case_id=case.id, status=Status.ERROR, error=str(exc))
+            return Verdict(case_id=case.id, status=Status.ERROR, error=_key_error_text(exc))
         except Exception as exc:  # noqa: BLE001 - 单条用例失败不终止整轮运行
             return Verdict(
                 case_id=case.id,
@@ -163,6 +205,8 @@ class ContractRunner:
 
         merged_metadata = dict(self.metadata)
         merged_metadata.update(metadata or {})
+        if self.trace_name is not None:
+            merged_metadata.setdefault("trace_name", self.trace_name)
         run = Run(
             run_id=run_id or new_run_id(),
             started_at=datetime.now(timezone.utc),
