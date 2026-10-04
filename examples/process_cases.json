@@ -1,0 +1,67 @@
+{
+  "cases": [
+    {
+      "id": "process-exact-sequence",
+      "kind": "process",
+      "description": "多步流程必须按声明顺序调用且没有多余步骤",
+      "steps": [
+        { "target": "echo_tool", "input": { "message": "reserve" } },
+        { "target": "idempotent_tool", "input": { "idempotency_key": "order-1" } },
+        {
+          "target": "payout_tool",
+          "input": { "steps": ["reserve", "capture"], "fail_at": "never" }
+        }
+      ],
+      "checks": [
+        {
+          "kind": "tool_sequence",
+          "expected": ["echo_tool", "idempotent_tool", "payout_tool"],
+          "mode": "exact"
+        },
+        {
+          "kind": "no_extra_calls",
+          "allowed": ["echo_tool", "idempotent_tool", "payout_tool"]
+        }
+      ]
+    },
+    {
+      "id": "process-failure-recovery",
+      "kind": "process",
+      "description": "多步操作失败之后必须通过一次成功调用恢复",
+      "steps": [
+        {
+          "target": "payout_tool",
+          "input": { "steps": ["reserve", "capture"], "fail_at": "capture" }
+        },
+        {
+          "target": "payout_tool",
+          "input": { "steps": ["reserve", "capture"], "fail_at": "never" }
+        }
+      ],
+      "checks": [
+        {
+          "kind": "recovery",
+          "failed_tool": "payout_tool",
+          "recovered_by": "payout_tool"
+        }
+      ]
+    },
+    {
+      "id": "process-state-continuity",
+      "kind": "process",
+      "description": "上一步产出的订单标识必须传到下一步调用",
+      "steps": [
+        { "target": "idempotent_tool", "input": { "idempotency_key": "order-7" } },
+        { "target": "echo_tool", "input": { "message": "order-7" } }
+      ],
+      "checks": [
+        {
+          "kind": "state_continuity",
+          "producer": "idempotent_tool",
+          "consumer": "echo_tool",
+          "producer_field": "charge"
+        }
+      ]
+    }
+  ]
+}

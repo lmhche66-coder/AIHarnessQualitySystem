@@ -5,8 +5,10 @@
 """
 
 from agenteval.models import (
+    AnyCase,
     Case,
     CheckOutcome,
+    ProcessCase,
     Run,
     RunSummary,
     Status,
@@ -28,6 +30,8 @@ __version__ = "0.1.0"
 __all__ = [
     "Case",
     "CheckOutcome",
+    "AnyCase",
+    "ProcessCase",
     "Run",
     "RunSummary",
     "SchemaTool",

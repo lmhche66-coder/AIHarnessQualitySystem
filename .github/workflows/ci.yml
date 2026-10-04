@@ -22,18 +22,24 @@ jobs:
       - name: Tests
         run: python -m pytest
 
-      - name: Record cassette
-        run: >-
-          python -m agenteval --home .agenteval run
-          --cases examples/replayable_cases.json --demo
-          --cassette demo --cassette-mode record
-
-      - name: Capture baseline
-        run: python -m agenteval --home .agenteval baseline
-
-      - name: Replay and gate
+      - name: Record and replay contract cases
         run: |
           python -m agenteval --home .agenteval run \
             --cases examples/replayable_cases.json --demo \
-            --cassette demo --cassette-mode replay
-          python -m agenteval --home .agenteval gate
+            --cassette contract --cassette-mode record
+          python -m agenteval --home .agenteval baseline --name contract
+          python -m agenteval --home .agenteval run \
+            --cases examples/replayable_cases.json --demo \
+            --cassette contract --cassette-mode replay
+          python -m agenteval --home .agenteval gate --name contract
+
+      - name: Record and replay process cases
+        run: |
+          python -m agenteval --home .agenteval run \
+            --cases examples/process_cases.json --demo \
+            --cassette process --cassette-mode record
+          python -m agenteval --home .agenteval baseline --name process
+          python -m agenteval --home .agenteval run \
+            --cases examples/process_cases.json --demo \
+            --cassette process --cassette-mode replay
+          python -m agenteval --home .agenteval gate --name process

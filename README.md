@@ -150,6 +150,61 @@ python -m agenteval --home .agenteval gate --allow-regressions           # 豁�
 
 CI 工作流在 `.github/workflows/ci.yml`，依次跑测试、录制 cassette、捕获基线、回放并执行门禁，最后一步的退出码就是整个 job 的结论。
 
+## 轨迹级过程断言
+
+只看最终答案是碰运气的。过程断言检查 agent 的中间步骤：工具选得对不对、顺序是否合理、有没有多余步骤、失败后是否恢复、上一步的状态有没有传下去。
+
+过程用例与工具契约用例写在同一个用例文件里，声明要执行的步骤和要验证的断言：
+
+```json
+{
+  "id": "process-exact-sequence",
+  "kind": "process",
+  "steps": [
+    { "target": "echo_tool", "input": { "message": "reserve" } },
+    { "target": "idempotent_tool", "input": { "idempotency_key": "order-1" } }
+  ],
+  "checks": [
+    { "kind": "tool_sequence", "expected": ["echo_tool", "idempotent_tool"], "mode": "exact" },
+    { "kind": "no_extra_calls", "allowed": ["echo_tool", "idempotent_tool"] }
+  ]
+}
+```
+
+四类过程断言：
+
+| kind | 关键字段 | 验证内容 |
+| --- | --- | --- |
+| `tool_sequence` | `expected`、`mode` | 调用顺序；`subsequence`（默认）允许多余步骤，`exact` 要求逐项一致 |
+| `no_extra_calls` | `allowed` | 除允许集合外没有其他工具被调用 |
+| `recovery` | `failed_tool`、`recovered_by` | 某次失败之后存在成功的后续调用 |
+| `state_continuity` | `producer`、`consumer`、`producer_field` | 生产者产出的值出现在消费者调用的参数里 |
+
+```bash
+python -m agenteval --home .agenteval run --cases examples/process_cases.json --demo
+```
+
+两个刻意的取舍：顺序断言默认子序列，因为真实 agent 常有多余的准备性调用，默认完全匹配会制造误报，最后逼着团队把断言放宽到没有意义；`recovery` 在「失败从未发生」时判失败而不是跳过，因为恢复断言的目的是证明恢复路径被走过，没失败就说明这条路径根本没被覆盖。
+
+要在自己的 agent 里记录真实轨迹，用记录包装器：
+
+```python
+from agenteval.models import Trace
+from agenteval.process import TraceSession, check_process_case, wrap_registry_for_trace
+
+session = TraceSession()
+registry = wrap_registry_for_trace(my_registry, session)
+
+trace = Trace(case_id="my-task")
+session.begin_case(trace)
+run_my_agent(registry)  # 期间所有工具调用都会进入 trace
+session.end_case()
+
+verdict = check_process_case(my_process_case, trace)
+```
+
+注意工具实例在整轮运行中是共享的，有状态的桩件会跨用例累积状态。示例用例因此只使用结果不依赖历史调用的工具；真实工具本就如此，用例设计时要把这一点考虑进去。
+
 ## 在 pytest 里运行
 
 ```bash

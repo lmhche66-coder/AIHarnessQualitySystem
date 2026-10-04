@@ -11,12 +11,24 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 import yaml
+from pydantic import TypeAdapter
 
 from agenteval.cassette import CassetteMode, CassetteSession
 from agenteval.contracts import check_case
-from agenteval.models import Case, CheckOutcome, Run, Status, Trace, Verdict
+from agenteval.models import (
+    AnyCase,
+    CheckOutcome,
+    ProcessCase,
+    Run,
+    Status,
+    Trace,
+    Verdict,
+)
+from agenteval.process import check_process_case, record_tool_call
 from agenteval.store import RunStore
-from agenteval.tools import ToolRegistry
+from agenteval.tools import ToolErrorKind, ToolRegistry, ToolResult
+
+_ANY_CASE_ADAPTER: TypeAdapter[AnyCase] = TypeAdapter(AnyCase)
 
 
 def new_run_id() -> str:
@@ -30,12 +42,12 @@ def new_run_id() -> str:
 NON_REPLAYABLE_CHECKS = frozenset({"timeout"})
 
 
-def _non_replayable_reason(case: Case, session: CassetteSession | None) -> str | None:
+def _non_replayable_reason(case: AnyCase, session: CassetteSession | None) -> str | None:
     """耗时相关契约在非录制模式下无法忠实重放，宁可直接拒绝也不给出错误结论。"""
 
     if session is None or session.mode is CassetteMode.RECORD:
         return None
-    check_kind = getattr(case.check, "kind", None)
+    check_kind = getattr(getattr(case, "check", None), "kind", None)
     if check_kind in NON_REPLAYABLE_CHECKS:
         return (
             f"check '{check_kind}' depends on real call latency and cannot be replayed from "
@@ -44,7 +56,7 @@ def _non_replayable_reason(case: Case, session: CassetteSession | None) -> str |
     return None
 
 
-def load_cases(path: Path) -> list[Case]:
+def load_cases(path: Path) -> list[AnyCase]:
     """从 JSON 或 YAML 文件载入用例列表。"""
 
     path = Path(path)
@@ -57,7 +69,7 @@ def load_cases(path: Path) -> list[Case]:
         payload = payload.get("cases", [])
     if not isinstance(payload, list):
         raise ValueError(f"cases file must contain a list or a 'cases' key: {path}")
-    return [Case.model_validate(item) for item in payload]
+    return [_ANY_CASE_ADAPTER.validate_python(item) for item in payload]
 
 
 @dataclass
@@ -69,7 +81,7 @@ class ContractRunner:
     metadata: dict[str, Any] = field(default_factory=dict)
     cassette_session: CassetteSession | None = None
 
-    def run_case(self, case: Case) -> tuple[Verdict, Trace]:
+    def run_case(self, case: AnyCase) -> tuple[Verdict, Trace]:
         """执行单条用例，返回判定与轨迹。"""
 
         trace = Trace(case_id=case.id)
@@ -85,7 +97,9 @@ class ContractRunner:
         verdict.duration_ms = round((time.perf_counter() - start) * 1000, 3)
         return verdict, trace
 
-    def _evaluate(self, case: Case, trace: Trace) -> Verdict:
+    def _evaluate(self, case: AnyCase, trace: Trace) -> Verdict:
+        if isinstance(case, ProcessCase):
+            return self._evaluate_process(case, trace)
         blocked = _non_replayable_reason(case, self.cassette_session)
         if blocked is not None:
             trace.record(
@@ -107,9 +121,41 @@ class ContractRunner:
                 error=f"{type(exc).__name__}: {exc}",
             )
 
+    def _evaluate_process(self, case: ProcessCase, trace: Trace) -> Verdict:
+        try:
+            self._run_process_steps(case, trace)
+            return check_process_case(case, trace)
+        except KeyError as exc:
+            return Verdict(case_id=case.id, status=Status.ERROR, error=str(exc))
+        except Exception as exc:  # noqa: BLE001 - 单条用例失败不终止整轮运行
+            return Verdict(
+                case_id=case.id,
+                status=Status.ERROR,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+
+    def _run_process_steps(self, case: ProcessCase, trace: Trace) -> None:
+        """按声明顺序执行步骤，并把每次调用记入轨迹。
+
+        步骤由运行器驱动，因此过程用例无需外部 agent 即可端到端运行；需要记录
+        真实 agent 轨迹时改用 ``wrap_registry_for_trace`` 包装工具。
+        """
+
+        for step in case.steps:
+            tool = self.registry.get(step.target)
+            try:
+                result = tool.invoke(**step.input)
+            except Exception as exc:  # noqa: BLE001 - 调用失败也要记入轨迹
+                result = ToolResult(
+                    ok=False,
+                    error_kind=ToolErrorKind.UPSTREAM,
+                    error_message=f"{type(exc).__name__}: {exc}",
+                )
+            record_tool_call(trace, step.target, step.input, result)
+
     def run(
         self,
-        cases: Iterable[Case],
+        cases: Iterable[AnyCase],
         metadata: dict[str, Any] | None = None,
         run_id: str | None = None,
     ) -> Run:

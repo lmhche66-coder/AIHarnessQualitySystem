@@ -100,6 +100,83 @@ class Case(BaseModel):
     check: ContractCheckSpec
 
 
+class ProcessCheck(BaseModel):
+    """过程检查的公共基类，``kind`` 用于区分具体检查类型。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: str
+
+
+class ToolSequenceCheck(ProcessCheck):
+    """断言工具调用的顺序。"""
+
+    kind: Literal["tool_sequence"] = "tool_sequence"
+    expected: list[str] = Field(default_factory=list)
+    mode: Literal["subsequence", "exact"] = "subsequence"
+
+
+class NoExtraCallsCheck(ProcessCheck):
+    """断言除允许集合外没有其他工具被调用。"""
+
+    kind: Literal["no_extra_calls"] = "no_extra_calls"
+    allowed: list[str] = Field(default_factory=list)
+
+
+class RecoveryCheck(ProcessCheck):
+    """断言某次失败之后存在成功的后续调用。"""
+
+    kind: Literal["recovery"] = "recovery"
+    failed_tool: str = ""
+    recovered_by: str | None = None
+
+
+class StateContinuityCheck(ProcessCheck):
+    """断言前一次调用的产出被传递到后续调用的参数中。"""
+
+    kind: Literal["state_continuity"] = "state_continuity"
+    producer: str = ""
+    consumer: str = ""
+    producer_field: str | None = None
+
+
+ProcessCheckSpec = Annotated[
+    Union[
+        ToolSequenceCheck,
+        NoExtraCallsCheck,
+        RecoveryCheck,
+        StateContinuityCheck,
+    ],
+    Field(discriminator="kind"),
+]
+
+
+class ProcessStep(BaseModel):
+    """过程用例中的一次工具调用。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: str = Field(min_length=1)
+    input: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProcessCase(BaseModel):
+    """一条过程用例：执行声明的步骤，再对轨迹做过程断言。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    kind: Literal["process"] = "process"
+    description: str | None = None
+    steps: list[ProcessStep] = Field(default_factory=list)
+    checks: list[ProcessCheckSpec] = Field(default_factory=list)
+
+
+# 两类用例的必填字段互斥，且都禁止未声明字段，因此用智能联合即可区分；
+# 这样既支持显式声明 kind，也保持既有未声明 kind 的用例文件可用。
+AnyCase = Union[Case, ProcessCase]
+
+
 class CheckOutcome(BaseModel):
     """单条断言的执行结果。"""
 
