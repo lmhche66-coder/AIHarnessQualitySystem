@@ -1,0 +1,91 @@
+[
+  {
+    "id": "tool_1f4a9c2e",
+    "ownerUserId": "user-demo",
+    "sessionId": null,
+    "diagnosticTaskId": "task-eeg-sample-loss",
+    "toolName": "knowledge_retrieval",
+    "status": "completed",
+    "arguments": { "query": "EEG 采样丢失 电极阻抗", "top_k": 3 },
+    "resultSummary": "{\"results\":[{\"sopId\":\"physio-eeg-sample-loss-sop\"}]}",
+    "errorMessage": null,
+    "startedAt": "2026-10-05T02:10:00.100Z",
+    "completedAt": "2026-10-05T02:10:00.480Z",
+    "durationMs": 380,
+    "createdAt": "2026-10-05T02:10:00.100Z"
+  },
+  {
+    "id": "tool_5c8b1d70",
+    "ownerUserId": "user-demo",
+    "sessionId": null,
+    "diagnosticTaskId": "task-eeg-sample-loss",
+    "toolName": "ListTopics",
+    "status": "completed",
+    "arguments": {},
+    "resultSummary": "{\"topics\":[{\"topicId\":\"local-physio-logs\"}]}",
+    "errorMessage": null,
+    "startedAt": "2026-10-05T02:10:00.600Z",
+    "completedAt": "2026-10-05T02:10:00.640Z",
+    "durationMs": 40,
+    "createdAt": "2026-10-05T02:10:00.600Z"
+  },
+  {
+    "id": "tool_9ab3e512",
+    "ownerUserId": "user-demo",
+    "sessionId": null,
+    "diagnosticTaskId": "task-eeg-sample-loss",
+    "toolName": "SearchLog",
+    "status": "failed",
+    "arguments": {
+      "Region": "ap-guangzhou",
+      "TopicId": "local-physio-logs",
+      "From": 1759630200000,
+      "To": 1759633800000,
+      "Query": "EEG sample loss",
+      "Limit": 20
+    },
+    "resultSummary": null,
+    "errorMessage": "opensearch request timed out",
+    "startedAt": "2026-10-05T02:10:01.000Z",
+    "completedAt": "2026-10-05T02:10:04.000Z",
+    "durationMs": 3000,
+    "createdAt": "2026-10-05T02:10:01.000Z"
+  },
+  {
+    "id": "tool_b7d2f883",
+    "ownerUserId": "user-demo",
+    "sessionId": null,
+    "diagnosticTaskId": "task-eeg-sample-loss",
+    "toolName": "SearchLog",
+    "status": "completed",
+    "arguments": {
+      "Region": "ap-guangzhou",
+      "TopicId": "local-physio-logs",
+      "From": 1759630200000,
+      "To": 1759633800000,
+      "Query": "EEG sample loss",
+      "Limit": 20
+    },
+    "resultSummary": "{\"source\":\"local-physio-logs\",\"total\":12}",
+    "errorMessage": null,
+    "startedAt": "2026-10-05T02:10:05.200Z",
+    "completedAt": "2026-10-05T02:10:05.920Z",
+    "durationMs": 720,
+    "createdAt": "2026-10-05T02:10:05.200Z"
+  },
+  {
+    "id": "tool_44de08aa",
+    "ownerUserId": "user-demo",
+    "sessionId": null,
+    "diagnosticTaskId": "task-eeg-sample-loss",
+    "toolName": "knowledge_retrieval",
+    "status": "started",
+    "arguments": { "query": "sample loss root cause", "top_k": 3 },
+    "resultSummary": null,
+    "errorMessage": null,
+    "startedAt": "2026-10-05T02:10:06.500Z",
+    "completedAt": null,
+    "durationMs": null,
+    "createdAt": "2026-10-05T02:10:06.500Z"
+  }
+]

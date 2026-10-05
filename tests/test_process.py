@@ -208,3 +208,23 @@ def test_process_case_without_checks_fails() -> None:
     verdict = check_process_case(make_case([]), Trace(case_id="p"))
     assert verdict.status is Status.FAIL
     assert verdict.failed_checks[0].name == "process.checks_configured"
+
+
+def test_state_continuity_distinguishes_missing_values_from_lost_state() -> None:
+    """值未被记录时应归因为数据缺失，而不是状态丢失。"""
+
+    trace = Trace(case_id="p")
+    trace.record(
+        "tool_call",
+        payload={"target": "create", "args": {}, "ok": True, "error_kind": None, "attempts": 1},
+    )
+    trace.record(
+        "tool_call",
+        payload={"target": "pay", "args": {"order_id": "o-1"}, "ok": True, "error_kind": None},
+    )
+    verdict = check_process_case(
+        make_case([{"kind": "state_continuity", "producer": "create", "consumer": "pay"}]),
+        trace,
+    )
+    assert verdict.status is Status.FAIL
+    assert "not recorded in this trace" in (verdict.failed_checks[0].message or "")

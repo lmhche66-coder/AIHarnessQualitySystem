@@ -337,6 +337,54 @@ python -m agenteval --home .agenteval run --cases candidates.json --demo
 
 归因需要原始用例定义，默认取运行元信息里记录的文件路径，也可以用 `--cases` 指定。
 
+### 接入跑在别处的 agent：导入工具调用审计
+
+真实 agent 多数不在平台里运行，工具调用记在自己的审计日志中。只要有工具名、参数、生命周期状态、起止时间与耗时，就能导入成平台轨迹，**不需要改动 agent 的代码**。
+
+```bash
+python -m agenteval --home .agenteval trace import \
+  --from examples/kingfar_audit.json \
+  --name kingfar-eeg-sample-loss \
+  --case-id task-eeg-sample-loss
+```
+
+```
+trace 'kingfar-eeg-sample-loss' imported from examples\kingfar_audit.json
+records: 5  case: task-eeg-sample-loss  events: 5
+limitation: no raw result values were recorded; the state_continuity check cannot be evaluated on this trace
+limitation: 1 call(s) have no completion; they are recorded as interrupted without a result or duration
+```
+
+JSON 数组与 CSV 导出都支持，示例取的是 kingfar-aiops `/audits/tool-calls/export` 的列结构。导入后就是普通命名轨迹：
+
+```bash
+python -m agenteval --home .agenteval run --cases examples/kingfar_cases.json --demo
+```
+
+```
+cases: 1  pass: 1  fail: 0  error: 0
+metrics: calls=5 retries=1 p50=6020.0ms p95=6020.0ms tokens=0/0 usage=not reported
+```
+
+指标全部来自审计本身：5 次调用、1 次重复（同参数重试 `SearchLog`）、跨度 6 秒，其中 3 秒是那次 opensearch 超时。这正是功能判据看不见、但业务方会问的东西。
+
+三个刻意的设计：
+
+- **三态生命周期**。审计里存在只有开始、没有结束的记录，代表调用被中断。当作失败是编造，当作成功更危险，保留为「未结束」才如实。
+- **缺失就是缺失**。审计通常只存有界结果摘要而非原始返回值。导入时把摘要放进单独字段而不是返回值字段，并明确标注状态传递判据**无法评估**，否则会产生一堆假失败。
+- **坏记录直接拒绝**。缺少工具名或开始时间时拒绝并指出第几条，而不是跳过——跳过会让轨迹步骤变少，而步骤数量本身是判据的输入。
+
+字段对照表：
+
+| 审计字段 | 轨迹事件字段 |
+| --- | --- |
+| `toolName` | `target` |
+| `arguments` / `argumentsJson` | `args` |
+| `status`：completed / failed / started | `ok` / `error_kind` / 未结束 |
+| `startedAt`、`completedAt` | 事件时间戳，耗时与预算据此推导 |
+| `resultSummary` | 单独字段，不进入返回值，避免假失败 |
+| `errorMessage` | 事件错误消息 |
+
 ## 指标与预算
 
 功能判据全绿不代表代价可控：一个用例可能通过，却调用了三十次工具、重试了十次。指标与预算把这类问题变成可判定的东西。
@@ -411,6 +459,7 @@ def test_tool_contracts(tmp_path):
 - 端到端任务只做单次执行统计，不做重复尝试与 pass@k；环境隔离靠工厂重建，尚未提供快照恢复。
 - token 用量依赖工具上报，覆盖不全时只汇总已上报部分；尚未做 token 预算与成本货币化换算。
 - 未提供吞吐与并发压测、显存与推理引擎 benchmark。
+- 审计导入只覆盖工具调用边界；状态传递判据要求源数据保留原始返回值，仅有结果摘要时无法评估。
 
 ## 规格来源
 

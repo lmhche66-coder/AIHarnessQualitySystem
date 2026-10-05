@@ -21,6 +21,13 @@ from agenteval.cassette import (
     CassetteStore,
     wrap_registry,
 )
+from agenteval.audit_import import (
+    AuditImportError,
+    ImportReport,
+    build_trace,
+    fidelity_report,
+    load_audit_records,
+)
 from agenteval.fakes import build_demo_registry
 from agenteval.gate import (
     BASELINES_DIRNAME,
@@ -132,6 +139,21 @@ def build_parser() -> argparse.ArgumentParser:
     trace_save_parser.add_argument("--case", dest="case_id", help="case id whose trace to capture")
     trace_list_parser = trace_subparsers.add_parser("list", help="list stored traces")
     trace_list_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    trace_import_parser = trace_subparsers.add_parser(
+        "import", help="import tool-call audit records as a named trace"
+    )
+    trace_import_parser.add_argument(
+        "--from",
+        dest="source",
+        type=Path,
+        required=True,
+        help="audit export file (JSON or CSV)",
+    )
+    trace_import_parser.add_argument("--name", required=True, help="trace name to write")
+    trace_import_parser.add_argument(
+        "--case-id", help="case id for the imported trace (default: the trace name)"
+    )
+    trace_import_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
 
     task_parser = subparsers.add_parser("task", help="run end-to-end tasks")
     task_subparsers = task_parser.add_subparsers(dest="task_command", required=True)
@@ -374,7 +396,44 @@ def _cmd_trace(args: argparse.Namespace, store: RunStore) -> int:
         return _cmd_trace_save(args, store)
     if args.trace_command == "list":
         return _cmd_trace_list(args)
+    if args.trace_command == "import":
+        return _cmd_trace_import(args)
     return 2
+
+
+def _cmd_trace_import(args: argparse.Namespace) -> int:
+    try:
+        records = load_audit_records(args.source)
+    except FileNotFoundError:
+        print(f"audit file not found: {args.source}", file=sys.stderr)
+        return 2
+    except AuditImportError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except json.JSONDecodeError as exc:
+        print(f"audit file is not valid JSON: {exc}", file=sys.stderr)
+        return 2
+
+    case_id = args.case_id or args.name
+    trace = build_trace(records, case_id)
+    path = _trace_store_from_args(args).save(
+        args.name, trace, source=f"import:{args.source}"
+    )
+    report = ImportReport(
+        records=len(records),
+        case_id=case_id,
+        trace_name=args.name,
+        limitations=fidelity_report(records),
+    )
+    if args.json:
+        print(report.model_dump_json(indent=2))
+        return 0
+    print(f"trace '{args.name}' imported from {args.source}")
+    print(f"records: {report.records}  case: {case_id}  events: {len(trace.events)}")
+    for limitation in report.limitations:
+        print(f"limitation: {limitation}")
+    print(f"stored: {path}")
+    return 0
 
 
 def _cmd_trace_save(args: argparse.Namespace, store: RunStore) -> int:

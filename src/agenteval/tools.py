@@ -26,6 +26,8 @@ class ToolErrorKind(str, Enum):
     NOT_FOUND = "not_found"
     ROLLBACK_FAILED = "rollback_failed"
     CASSETTE_MISS = "cassette_miss"
+    FAILED = "failed"
+    INTERRUPTED = "interrupted"
 
 
 class ToolError(Exception):

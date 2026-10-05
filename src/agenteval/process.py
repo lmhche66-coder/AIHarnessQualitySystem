@@ -44,6 +44,7 @@ class ToolCall(BaseModel):
     error_kind: str | None = None
     attempts: int = 1
     value: Any = None
+    value_recorded: bool = True
     usage: TokenUsage | None = None
 
 
@@ -92,6 +93,7 @@ def extract_tool_calls(trace: Trace) -> list[ToolCall]:
                 error_kind=payload.get("error_kind"),
                 attempts=int(payload.get("attempts") or 1),
                 value=payload.get("value"),
+                value_recorded="value" in payload,
                 usage=(
                     TokenUsage.model_validate(usage_payload)
                     if isinstance(usage_payload, dict)
@@ -349,6 +351,19 @@ def _check_state_continuity(
         followers = [call for call in calls[index + 1 :] if call.target == check.consumer]
         if not followers:
             continue
+        if not producer.value_recorded:
+            return [
+                CheckOutcome(
+                    name="state_continuity",
+                    passed=False,
+                    expected=f"a recorded value from {check.producer}",
+                    actual={"producer_index": index},
+                    message=(
+                        "the producer value was not recorded in this trace; "
+                        "state continuity cannot be evaluated"
+                    ),
+                )
+            ]
         candidates = _produced_values(producer.value, check.producer_field)
         for consumer in followers:
             matched = [value for value in candidates if _contains(value, consumer.args)]

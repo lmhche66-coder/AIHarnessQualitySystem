@@ -75,3 +75,13 @@ jobs:
             echo "candidate no longer reproduces the original failure"
             exit 1
           fi
+
+      - name: Import an external agent audit
+        run: |
+          python -m agenteval --home .agenteval trace import \
+            --from examples/kingfar_audit.json \
+            --name kingfar-eeg-sample-loss \
+            --case-id task-eeg-sample-loss
+          python -m agenteval --home .agenteval run \
+            --cases examples/kingfar_cases.json --demo
+          python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0
