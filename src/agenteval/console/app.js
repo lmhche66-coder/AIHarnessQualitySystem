@@ -97,6 +97,7 @@ function renderDetail(run) {
   if (metadata.metrics) parts.push(renderMetrics(metadata.metrics));
   if (metadata.task_report) parts.push(renderTaskReport(metadata.task_report, metadata.attempt_report));
   if (metadata.cassette) parts.push(renderCassette(metadata.cassette));
+  if (metadata.load_report) parts.push(renderLoad(metadata.load_report));
 
   parts.push(renderCases(run));
   detail.innerHTML = parts.join("");
@@ -155,6 +156,41 @@ function renderCassette(cassette) {
     kv("交互", cassette.interactions) +
     kv("未使用", (cassette.unused || []).length);
   return `<div class="block"><div class="block-title">cassette</div><div class="kv">${rows}</div></div>`;
+}
+
+function renderLoad(reports) {
+  const sections = reports.map((report) => {
+    const verdict = report.passed === true ? "PASS" : report.passed === false ? "FAIL" : "INFO";
+    const rows =
+      kv("并发", report.concurrency) +
+      kv("完成", report.completed) +
+      kv("失败", report.failed) +
+      kv("错误率", Number(report.error_rate || 0).toFixed(4)) +
+      kv("吞吐", `${report.throughput_rps} rps`) +
+      kv("p50/p95/p99", `${report.latency_p50_ms}/${report.latency_p95_ms}/${report.latency_p99_ms} ms`);
+    const ttfb = report.ttfb_observed
+      ? kv("首字节 p50/p95", `${report.ttfb_p50_ms}/${report.ttfb_p95_ms} ms`)
+      : "";
+    const errors = Object.keys(report.error_kinds || {}).length
+      ? `<ul class="violations">${Object.entries(report.error_kinds)
+          .map(([kind, value]) => `<li>${esc(kind)} × ${esc(value)}</li>`)
+          .join("")}</ul>`
+      : "";
+    const fanout = Object.keys(report.fanout || {}).length
+      ? `<div class="kv">${Object.entries(report.fanout)
+          .map(([name, stats]) => kv(name, `均值 ${stats.mean} / p95 ${stats.p95}`))
+          .join("")}</div>`
+      : "";
+    const notes = [...(report.reasons || []), ...(report.limitations || [])];
+    const notesHtml = notes.length
+      ? `<ul class="violations">${notes.map((note) => `<li>${esc(note)}</li>`).join("")}</ul>`
+      : "";
+    return (
+      `<div class="block-title">[${verdict}] ${esc(report.scenario_id)}</div>` +
+      `<div class="kv">${rows}${ttfb}</div>${errors}${fanout}${notesHtml}`
+    );
+  });
+  return `<div class="block"><div class="block-title">压测</div>${sections.join("")}</div>`;
 }
 
 function renderCases(run) {
