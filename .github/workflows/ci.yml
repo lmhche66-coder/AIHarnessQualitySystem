@@ -104,3 +104,11 @@ jobs:
             --tasks examples/flaky_task.json \
             --registry agenteval.fakes:build_task_registry \
             --agent examples/demo_agent.py:build_flaky_agent
+
+      - name: Load test a mock agent endpoint
+        run: |
+          python examples/mock_agent_endpoint.py 8799 &
+          sleep 1
+          python -m agenteval --home .agenteval load run \
+            --scenarios examples/load_scenarios.json \
+            --base-url http://127.0.0.1:8799

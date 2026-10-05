@@ -45,6 +45,7 @@ from agenteval.judge import (
     format_report as format_judge_report,
     load_gold_set,
 )
+from agenteval.load import load_scenarios, run_scenarios
 from agenteval.models import Run
 from agenteval.models import AnyCase
 from agenteval.runner import ContractRunner, load_cases
@@ -214,6 +215,17 @@ def build_parser() -> argparse.ArgumentParser:
     serve_parser = subparsers.add_parser("serve", help="open the local read-only console")
     serve_parser.add_argument("--host", default=DEFAULT_HOST, help=f"bind address (default: {DEFAULT_HOST})")
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port (default: {DEFAULT_PORT})")
+
+    load_parser = subparsers.add_parser("load", help="run HTTP load scenarios")
+    load_subparsers = load_parser.add_subparsers(dest="load_command", required=True)
+    load_run_parser = load_subparsers.add_parser("run", help="execute load scenarios")
+    load_run_parser.add_argument(
+        "--scenarios", type=Path, required=True, help="scenario file (JSON or YAML)"
+    )
+    load_run_parser.add_argument(
+        "--base-url", help="override the base address of scenario targets"
+    )
+    load_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -240,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_judge(args)
     if args.command == "serve":
         return _cmd_serve(args, store)
+    if args.command == "load":
+        return _cmd_load(args, store)
     return 2
 
 
@@ -684,6 +698,66 @@ def _cmd_serve(args: argparse.Namespace, store: RunStore) -> int:
     finally:
         server.server_close()
     return 0
+
+
+def _cmd_load(args: argparse.Namespace, store: RunStore) -> int:
+    if args.load_command != "run":
+        return 2
+    try:
+        scenarios = load_scenarios(args.scenarios)
+    except FileNotFoundError:
+        print(f"scenario file not found: {args.scenarios}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    run = run_scenarios(
+        scenarios,
+        base_url=args.base_url,
+        store=store,
+        metadata={"scenarios_file": str(args.scenarios), "base_url": args.base_url},
+    )
+    reports = run.metadata.get("load_report") or []
+    if args.json:
+        print(json.dumps(reports, ensure_ascii=False, indent=2))
+    else:
+        _print_load(run, reports)
+    return 1 if run.summary.failed or run.summary.errored else 0
+
+
+def _print_load(run: Run, reports: list[Any]) -> None:
+    print(f"run_id: {run.run_id}")
+    for report in reports:
+        if report.get("passed") is True:
+            verdict = "PASS"
+        elif report.get("passed") is False:
+            verdict = "FAIL"
+        else:
+            verdict = "INFO"
+        print(f"[{verdict}] {report.get('scenario_id')}  concurrency={report.get('concurrency')}")
+        print(
+            f"  requests: {report.get('completed')}  failed: {report.get('failed')}  "
+            f"error_rate: {report.get('error_rate', 0.0):.4f}  "
+            f"throughput: {report.get('throughput_rps', 0.0):.4f} rps"
+        )
+        print(
+            f"  latency ms: p50={report.get('latency_p50_ms')} p90={report.get('latency_p90_ms')} "
+            f"p95={report.get('latency_p95_ms')} p99={report.get('latency_p99_ms')}"
+        )
+        if report.get("ttfb_observed"):
+            print(
+                f"  ttfb ms: p50={report.get('ttfb_p50_ms')} p95={report.get('ttfb_p95_ms')}"
+            )
+        if report.get("error_kinds"):
+            print(f"  errors: {json.dumps(report['error_kinds'], ensure_ascii=False)}")
+        if report.get("fanout"):
+            print(f"  fanout: {json.dumps(report['fanout'], ensure_ascii=False)}")
+        for limitation in report.get("limitations") or []:
+            print(f"  limitation: {limitation}")
+        for reason in report.get("reasons") or []:
+            print(f"  reason: {reason}")
+    _print_metrics(run.metadata)
 
 
 def _print_run(run: Run) -> None:

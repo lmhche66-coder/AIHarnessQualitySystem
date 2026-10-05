@@ -1,0 +1,29 @@
+{
+  "scenarios": [
+    {
+      "id": "diagnosis-endpoint",
+      "description": "对诊断接口施加并发，观察延迟分布、错误分类与扇出",
+      "target": {
+        "url": "/api/aiops/diagnose",
+        "method": "POST",
+        "headers": { "Content-Type": "application/json" },
+        "body": "{\"query\":\"EEG 采样丢失\"}"
+      },
+      "concurrency": 8,
+      "requests": 40,
+      "timeout_s": 30,
+      "stream": true,
+      "extract": {
+        "llm_calls": "usage.llm_calls",
+        "tool_calls": "usage.tool_calls",
+        "input_tokens": "usage.prompt_tokens",
+        "output_tokens": "usage.completion_tokens"
+      },
+      "thresholds": {
+        "max_error_rate": 0.05,
+        "max_p95_ms": 20000,
+        "min_throughput_rps": 0.5
+      }
+    }
+  ]
+}
