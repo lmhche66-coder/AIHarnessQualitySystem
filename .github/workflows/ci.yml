@@ -85,3 +85,15 @@ jobs:
           python -m agenteval --home .agenteval run \
             --cases examples/kingfar_cases.json --demo
           python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0
+
+      - name: Calibrate a judge
+        run: |
+          python -m agenteval judge calibrate \
+            --gold examples/judge_gold.json \
+            --judge examples/demo_judges.py:build_keyword_judge
+          if python -m agenteval judge calibrate \
+            --gold examples/judge_gold.json \
+            --judge examples/demo_judges.py:build_position_biased_judge > /dev/null; then
+            echo "a position-biased judge must not be usable for the gate"
+            exit 1
+          fi

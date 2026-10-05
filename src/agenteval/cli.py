@@ -38,6 +38,12 @@ from agenteval.gate import (
     evaluate,
     format_report,
 )
+from agenteval.judge import (
+    JudgeThresholds,
+    calibrate as calibrate_judge,
+    format_report as format_judge_report,
+    load_gold_set,
+)
 from agenteval.models import Run
 from agenteval.models import AnyCase
 from agenteval.runner import ContractRunner, load_cases
@@ -187,6 +193,22 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"prefix for saved evidence traces (default: {DEFAULT_TRACE_PREFIX})",
     )
     triage_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    judge_parser = subparsers.add_parser("judge", help="calibrate an answer-quality judge")
+    judge_subparsers = judge_parser.add_subparsers(dest="judge_command", required=True)
+    judge_calibrate_parser = judge_subparsers.add_parser(
+        "calibrate", help="measure judge agreement and bias against a gold set"
+    )
+    judge_calibrate_parser.add_argument(
+        "--gold", type=Path, required=True, help="pairwise gold set (JSON or YAML)"
+    )
+    judge_calibrate_parser.add_argument(
+        "--judge", required=True, help="judge factory as 'package.module:factory'"
+    )
+    judge_calibrate_parser.add_argument("--min-agreement", type=float, default=0.8)
+    judge_calibrate_parser.add_argument("--max-position-flip", type=float, default=0.2)
+    judge_calibrate_parser.add_argument("--max-length-bias", type=float, default=0.8)
+    judge_calibrate_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -209,6 +231,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_task(args, store)
     if args.command == "triage":
         return _cmd_triage(args, store)
+    if args.command == "judge":
+        return _cmd_judge(args)
     return 2
 
 
@@ -599,6 +623,38 @@ def _load_original_cases(path: Path) -> list[AnyCase]:
         return list(load_cases(path))
     except ValueError:
         return list(load_tasks(path))
+
+
+def _cmd_judge(args: argparse.Namespace) -> int:
+    if args.judge_command != "calibrate":
+        return 2
+    try:
+        items = load_gold_set(args.gold)
+    except FileNotFoundError:
+        print(f"gold set not found: {args.gold}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    judge = load_factory(args.judge, "judge")()
+    if not callable(judge):
+        raise SystemExit("judge factory must return a callable judge")
+    thresholds = JudgeThresholds(
+        min_agreement=args.min_agreement,
+        max_position_flip_rate=args.max_position_flip,
+        max_length_bias=args.max_length_bias,
+    )
+    try:
+        report = calibrate_judge(judge, items, thresholds)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(report.model_dump_json(indent=2))
+    else:
+        print(format_judge_report(report))
+    return 0 if report.usable_for_gate else 1
 
 
 def _print_run(run: Run) -> None:

@@ -427,6 +427,51 @@ python -m agenteval --home .agenteval gate --min-pass-rate 1.0
 
 两个口径需要说明：耗时取自轨迹首尾事件的时间差，衡量的是工具调用跨度，不含模型思考时间；分位数用最近秩法，运行记录里标注了所采用的口径。
 
+## 裁判校准
+
+回答质量这类维度没有确定性判据，只能由裁判给分。但裁判本身是需要被验证的测量仪器——未经校准的裁判分不能进质量门禁。
+
+```bash
+python -m agenteval judge calibrate \
+  --gold examples/judge_gold.json \
+  --judge examples/demo_judges.py:build_keyword_judge
+```
+
+```
+judge: usable for gate
+items: 8  agreement: 1.0000 (95% CI 0.6756-1.0000, wilson)
+position flips: 0/8 (0.0000)
+length bias: 4/7 decisive (0.5714)
+thresholds: min_agreement=0.80  max_position_flip_rate=0.20  max_length_bias=0.80
+```
+
+平台不调用任何模型：裁判由你提供，是一个接收 `(prompt, response_a, response_b)` 并返回 `"a"` / `"b"` / `"tie"` 的函数。平台负责量化它对不对、偏不偏。
+
+三个检测项：
+
+- **一致率加置信区间**。8 条全对也只有 `0.6756-1.0000` 的区间，这就是为什么小样本上的「完美一致」不能当作精确值。区间用 Wilson 法，小样本下不越界也不虚窄。
+- **位置偏置**。交换两个候选重跑，看判定是否翻转。永远选第一个的裁判翻转率是 1.0：
+
+```
+judge: reference only
+agreement: 0.5000 (95% CI 0.2152-0.7848)
+position flips: 8/8 (1.0000)
+reasons:
+  - agreement 0.5000 is below the minimum 0.8000
+  - position flip rate 1.0000 exceeds the maximum 0.2000
+```
+
+- **长度偏置**。永远选更长回答的裁判会被识别：
+
+```
+agreement: 0.6250 (95% CI 0.3057-0.8632)
+length bias: 7/7 decisive (1.0000)
+reasons:
+  - longer-response win rate 1.0000 exceeds the maximum 0.8000
+```
+
+结论只有两种：`usable for gate` 或 `reference only`，退出码 0 或 1。未达标的裁判可以出参考分，但不能拦发布——这是把「裁判分不能当唯一标准」落成机制，而不是写成注意事项。
+
 ## 在 pytest 里运行
 
 ```bash
@@ -460,6 +505,7 @@ def test_tool_contracts(tmp_path):
 - token 用量依赖工具上报，覆盖不全时只汇总已上报部分；尚未做 token 预算与成本货币化换算。
 - 未提供吞吐与并发压测、显存与推理引擎 benchmark。
 - 审计导入只覆盖工具调用边界；状态传递判据要求源数据保留原始返回值，仅有结果摘要时无法评估。
+- 裁判校准只覆盖成对偏好型裁判；逐点评分型没有「位置」概念，偏置检测不适用。
 
 ## 规格来源
 
