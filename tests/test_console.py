@@ -59,8 +59,8 @@ def make_run(run_id: str, started_at: str) -> Run:
 
 
 @contextlib.contextmanager
-def running_console(store: RunStore) -> Iterator[str]:
-    server = create_server(store, port=0)
+def running_console(store: RunStore, allow_actions: bool | None = None) -> Iterator[str]:
+    server = create_server(store, port=0, allow_actions=allow_actions)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
@@ -73,8 +73,10 @@ def running_console(store: RunStore) -> Iterator[str]:
         thread.join(timeout=5)
 
 
-def fetch(url: str, method: str = "GET") -> tuple[int, bytes]:
-    request = urllib.request.Request(url, method=method)
+def fetch(url: str, method: str = "GET", body: dict | None = None) -> tuple[int, bytes]:
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
             return response.status, response.read()
@@ -133,6 +135,17 @@ def test_console_is_read_only(tmp_path: Path) -> None:
     assert status == 405
 
 
+def test_actions_are_refused_when_not_on_loopback(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    store.save(make_run("run-1", "2026-01-01T00:00:00Z"))
+    with running_console(store, allow_actions=False) as base:
+        status, body = fetch(
+            f"{base}/api/baselines", method="POST", body={"run_id": "run-1", "name": "main"}
+        )
+    assert status == 403
+    assert "read-only" in json.loads(body)["error"]
+
+
 def test_missing_run_directory_yields_empty_list(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "does-not-exist")
     with running_console(store) as base:
@@ -141,22 +154,96 @@ def test_missing_run_directory_yields_empty_list(tmp_path: Path) -> None:
     assert json.loads(body)["runs"] == []
 
 
-def test_static_assets_are_served(tmp_path: Path) -> None:
+def test_console_page_is_served_from_the_build(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs")
     with running_console(store) as base:
         status, body = fetch(f"{base}/")
     html = body.decode("utf-8")
     assert status == 200
-    assert "/app.js" in html
-    assert "http://" not in html.replace("http://www.w3.org", "")
+    assert "/assets/" in html
     assert "https://" not in html
 
 
-def test_frontend_has_no_external_references(tmp_path: Path) -> None:
+def test_built_assets_are_served(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs")
     with running_console(store) as base:
-        assets = [fetch(f"{base}/style.css")[1], fetch(f"{base}/app.js")[1]]
-    for body in assets:
-        text = body.decode("utf-8")
-        assert "https://" not in text
-        assert "http://" not in text
+        _, html = fetch(f"{base}/")
+        marker = "/assets/"
+        start = html.decode("utf-8").index(marker)
+        asset = html.decode("utf-8")[start:].split('"')[0]
+        status, _ = fetch(f"{base}{asset}")
+    assert status == 200
+
+
+def test_asset_path_traversal_is_refused(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    with running_console(store) as base:
+        status, _ = fetch(f"{base}/assets/../../server.py")
+    assert status in (400, 404)
+
+
+def test_reports_endpoint_lists_conclusions(tmp_path: Path) -> None:
+    from agenteval.reports import KIND_GATE, ConclusionStore, write_conclusion
+
+    store = RunStore(tmp_path / "runs")
+    write_conclusion(
+        ConclusionStore(tmp_path / "reports"),
+        kind=KIND_GATE,
+        title="gate run-1",
+        passed=True,
+        run_id="run-1",
+        summary={"run_id": "run-1", "pass_rate": 1.0},
+        payload={"run_id": "run-1"},
+    )
+    with running_console(store) as base:
+        status, body = fetch(f"{base}/api/reports")
+        detail_status, detail_body = fetch(
+            f"{base}/api/reports/{json.loads(body)['reports'][0]['id']}"
+        )
+    assert status == 200
+    assert json.loads(body)["reports"][0]["kind"] == "gate"
+    assert detail_status == 200
+    assert json.loads(detail_body)["summary"]["pass_rate"] == 1.0
+
+
+def test_baselines_endpoint_lists_and_captures(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    store.save(make_run("run-1", "2026-01-01T00:00:00Z"))
+    with running_console(store) as base:
+        empty_status, empty_body = fetch(f"{base}/api/baselines")
+        create_status, create_body = fetch(
+            f"{base}/api/baselines",
+            method="POST",
+            body={"run_id": "run-1", "name": "main"},
+        )
+        list_status, list_body = fetch(f"{base}/api/baselines")
+    assert empty_status == 200
+    assert json.loads(empty_body)["baselines"] == []
+    assert create_status == 201
+    assert json.loads(create_body)["cases"] == 2
+    baselines = json.loads(list_body)["baselines"]
+    assert list_status == 200
+    assert baselines[0]["name"] == "main"
+    assert baselines[0]["run_id"] == "run-1"
+    assert baselines[0]["counts"] == {"pass": 1, "fail": 1}
+
+
+def test_capturing_a_baseline_from_an_unknown_run_fails(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    with running_console(store) as base:
+        status, body = fetch(
+            f"{base}/api/baselines", method="POST", body={"run_id": "absent", "name": "x"}
+        )
+    assert status == 404
+    assert "absent" in json.loads(body)["error"]
+
+
+def test_page_has_no_external_resources(tmp_path: Path) -> None:
+    """页面不引用任何外部脚本或样式；打包产物里的错误提示 URL 不算外部引用。"""
+
+    store = RunStore(tmp_path / "runs")
+    with running_console(store) as base:
+        html = fetch(f"{base}/")[1].decode("utf-8")
+    assert 'src="http' not in html
+    assert 'href="http' not in html
+    assert "cdn" not in html

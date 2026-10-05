@@ -46,6 +46,14 @@ from agenteval.judge import (
     load_gold_set,
 )
 from agenteval.load import load_scenarios, run_scenarios
+from agenteval.reports import (
+    KIND_GATE,
+    KIND_JUDGE,
+    KIND_TRIAGE,
+    ConclusionStore,
+    write_conclusion,
+)
+from agenteval.reports import REPORTS_DIRNAME
 from agenteval.models import Run
 from agenteval.models import AnyCase
 from agenteval.runner import ContractRunner, load_cases
@@ -419,6 +427,22 @@ def _cmd_gate(args: argparse.Namespace, store: RunStore) -> int:
         ),
         allow_regressions=args.allow_regressions,
     )
+    _record_conclusion(
+        args,
+        kind=KIND_GATE,
+        title=f"gate {result.run_id}",
+        passed=result.passed,
+        run_id=result.run_id,
+        summary={
+            "run_id": result.run_id,
+            "pass_rate": result.pass_rate,
+            "failed": result.failed,
+            "errored": result.errored,
+            "regressions": result.regressions,
+            "missing": result.missing,
+        },
+        payload=result.model_dump(mode="json"),
+    )
     if args.json:
         print(result.model_dump_json(indent=2))
     else:
@@ -631,6 +655,23 @@ def _cmd_triage(args: argparse.Namespace, store: RunStore) -> int:
     )
     if args.emit is not None:
         write_candidates(args.emit, candidates)
+    _record_conclusion(
+        args,
+        kind=KIND_TRIAGE,
+        title=f"triage {run_id}",
+        passed=not any(
+            detail.reflowable and not detail.verified for detail in report.details
+        ),
+        run_id=run_id,
+        summary={
+            "run_id": run_id,
+            "total_failures": report.total_failures,
+            "reflowable": report.reflowable,
+            "verified": report.verified,
+            "candidates": [candidate.id for candidate in candidates],
+        },
+        payload=report.model_dump(mode="json"),
+    )
     if args.json:
         print(report.model_dump_json(indent=2))
     else:
@@ -678,11 +719,41 @@ def _cmd_judge(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    _record_conclusion(
+        args,
+        kind=KIND_JUDGE,
+        title=f"judge calibration ({args.gold.name})",
+        passed=report.usable_for_gate,
+        summary={
+            "items": report.items,
+            "agreement": report.agreement,
+            "ci_low": report.agreement_ci_low,
+            "ci_high": report.agreement_ci_high,
+            "position_flip_rate": report.position_flip_rate,
+            "length_bias": report.length_bias,
+        },
+        payload=report.model_dump(mode="json"),
+    )
     if args.json:
         print(report.model_dump_json(indent=2))
     else:
         print(format_judge_report(report))
     return 0 if report.usable_for_gate else 1
+
+
+def _conclusion_store_from_args(args: argparse.Namespace) -> ConclusionStore:
+    if args.home is not None:
+        return ConclusionStore(Path(args.home) / REPORTS_DIRNAME)
+    return ConclusionStore.default()
+
+
+def _record_conclusion(args: argparse.Namespace, **fields: Any) -> None:
+    """结论落盘是附带的持久化，失败只警告，不改变判定结果与退出码。"""
+
+    try:
+        write_conclusion(_conclusion_store_from_args(args), **fields)
+    except OSError as exc:
+        print(f"warning: could not persist conclusion: {exc}", file=sys.stderr)
 
 
 def _cmd_serve(args: argparse.Namespace, store: RunStore) -> int:

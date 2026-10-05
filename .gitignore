@@ -4,5 +4,6 @@ __pycache__/
 .pytest_cache/
 .agenteval/
 .venv/
-build/
-dist/
+/build/
+/dist/
+web/node_modules/

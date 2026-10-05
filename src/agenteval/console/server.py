@@ -7,34 +7,60 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from importlib import resources
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from agenteval.gate import Baseline, BaselineStore
 from agenteval.models import Run
+from agenteval.reports import ConclusionStore
 from agenteval.store import SUMMARY_FILENAME, RunStore
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 MAX_RUNS = 200
+DIST_DIRNAME = "dist"
 
-STATIC_TYPES = {
-    "index.html": "text/html; charset=utf-8",
-    "app.js": "application/javascript; charset=utf-8",
-    "style.css": "text/css; charset=utf-8",
+CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".svg": "image/svg+xml",
+    ".json": "application/json; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
 }
 
-STATIC_PATHS = {
-    "/": "index.html",
-    "/index.html": "index.html",
-    "/app.js": "app.js",
-    "/style.css": "style.css",
-}
+LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
 
-def _asset_bytes(name: str) -> bytes:
-    return (resources.files("agenteval.console") / name).read_bytes()
+def _content_type(name: str) -> str:
+    for suffix, content_type in CONTENT_TYPES.items():
+        if name.endswith(suffix):
+            return content_type
+    return "application/octet-stream"
+
+
+def _dist_bytes(name: str) -> bytes | None:
+    """读取前端构建产物；拒绝任何带路径回溯的名字。"""
+
+    if ".." in name:
+        return None
+    target = resources.files("agenteval.console") / DIST_DIRNAME / name
+    try:
+        if not target.is_file():
+            return None
+        return target.read_bytes()
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+        return None
+
+
+def _dist_available() -> bool:
+    try:
+        return (resources.files("agenteval.console") / DIST_DIRNAME).is_dir()
+    except (FileNotFoundError, NotADirectoryError):
+        return False
 
 
 def _load_summary(store: RunStore, run_id: str) -> Run | None:
@@ -109,8 +135,39 @@ def trace_payload(store: RunStore, run_id: str, case_id: str) -> dict[str, Any]:
     raise KeyError(f"run {run_id} has no trace for case: {case_id}")
 
 
-def create_handler(store: RunStore) -> type[BaseHTTPRequestHandler]:
+def baselines_payload(store: BaselineStore) -> list[dict[str, Any]]:
+    """列出基线，附带其来源运行的汇总计数。"""
+
+    entries: list[dict[str, Any]] = []
+    for name in store.list_baselines():
+        baseline = store.load(name)
+        if baseline is None:
+            continue
+        counts: dict[str, int] = {}
+        for status in baseline.verdicts.values():
+            counts[status.value] = counts.get(status.value, 0) + 1
+        entries.append(
+            {
+                "name": baseline.name,
+                "run_id": baseline.run_id,
+                "captured_at": baseline.captured_at.isoformat(),
+                "cases": len(baseline.verdicts),
+                "counts": counts,
+            }
+        )
+    return entries
+
+
+def create_handler(
+    store: RunStore,
+    *,
+    reports: ConclusionStore,
+    baselines: BaselineStore,
+    allow_actions: bool,
+) -> type[BaseHTTPRequestHandler]:
     """构造绑定到指定存储的请求处理器，便于测试直接注入临时目录。"""
+
+    from agenteval.gate import DEFAULT_BASELINE_NAME
 
     class ConsoleHandler(BaseHTTPRequestHandler):
         server_version = "agenteval-console"
@@ -119,7 +176,18 @@ def create_handler(store: RunStore) -> type[BaseHTTPRequestHandler]:
             self._route(urlparse(self.path).path)
 
         def do_POST(self) -> None:  # noqa: N802
-            self._reject()
+            if not allow_actions:
+                self._send_json(
+                    {
+                        "error": (
+                            "this console is read-only because it is not bound to a "
+                            "loopback address"
+                        )
+                    },
+                    status=403,
+                )
+                return
+            self._route_action(urlparse(self.path).path)
 
         def do_PUT(self) -> None:  # noqa: N802
             self._reject()
@@ -137,14 +205,44 @@ def create_handler(store: RunStore) -> type[BaseHTTPRequestHandler]:
             self._send_json({"error": "console is read-only"}, status=405)
 
         def _route(self, path: str) -> None:
-            asset = STATIC_PATHS.get(path)
-            if asset is not None:
-                self._send_bytes(_asset_bytes(asset), STATIC_TYPES[asset])
+            asset = "index.html" if path in ("/", "/index.html") else path.lstrip("/")
+            if asset == "index.html" or asset.startswith("assets/"):
+                body = _dist_bytes(asset)
+                if body is not None:
+                    self._send_bytes(body, _content_type(asset))
+                    return
+                if not _dist_available():
+                    self._send_json(
+                        {
+                            "error": (
+                                "console assets are not built; run 'npm run build' in web/"
+                            )
+                        },
+                        status=500,
+                    )
+                    return
+                self._send_json({"error": "not found"}, status=404)
                 return
             parts = [unquote(part) for part in path.strip("/").split("/") if part]
             try:
                 if parts == ["api", "runs"]:
                     self._send_json({"runs": list_runs(store)})
+                    return
+                if parts == ["api", "reports"]:
+                    self._send_json(
+                        {
+                            "reports": [
+                                record.model_dump(mode="json")
+                                for record in reports.list_records()
+                            ]
+                        }
+                    )
+                    return
+                if len(parts) == 3 and parts[:2] == ["api", "reports"]:
+                    self._send_json(reports.load(parts[2]).model_dump(mode="json"))
+                    return
+                if parts == ["api", "baselines"]:
+                    self._send_json({"baselines": baselines_payload(baselines)})
                     return
                 if len(parts) == 3 and parts[:2] == ["api", "runs"]:
                     self._send_json(run_detail_payload(store, parts[2]))
@@ -159,7 +257,48 @@ def create_handler(store: RunStore) -> type[BaseHTTPRequestHandler]:
                 message = exc.args[0] if exc.args else str(exc)
                 self._send_json({"error": message}, status=404)
                 return
-            self._send_json({"error": "not found"}, status=404)
+            self._send_json({"error": "method not allowed"}, status=405)
+
+        def _route_action(self, path: str) -> None:
+            parts = [unquote(part) for part in path.strip("/").split("/") if part]
+            if parts == ["api", "baselines"]:
+                body = self._read_json_body()
+                if body is None:
+                    return
+                run_id = str(body.get("run_id") or "").strip()
+                name = str(body.get("name") or DEFAULT_BASELINE_NAME).strip()
+                if not run_id:
+                    self._send_json({"error": "run_id is required"}, status=400)
+                    return
+                try:
+                    run = store.load(run_id)
+                except FileNotFoundError as exc:
+                    self._send_json({"error": str(exc)}, status=404)
+                    return
+                baseline = Baseline.from_run(run, name=name or DEFAULT_BASELINE_NAME)
+                baselines.save(baseline)
+                self._send_json(
+                    {"name": baseline.name, "run_id": baseline.run_id, "cases": len(baseline.verdicts)},
+                    status=201,
+                )
+                return
+            self._send_json({"error": "method not allowed"}, status=405)
+
+        def _read_json_body(self) -> dict[str, Any] | None:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                self._send_json({"error": "request body is required"}, status=400)
+                return None
+            raw = self.rfile.read(length)
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                self._send_json({"error": "request body must be valid JSON"}, status=400)
+                return None
+            if not isinstance(payload, Mapping):
+                self._send_json({"error": "request body must be a JSON object"}, status=400)
+                return None
+            return dict(payload)
 
         def _send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
             self.send_response(status)
@@ -180,7 +319,21 @@ def create_server(
     store: RunStore,
     host: str = DEFAULT_HOST,
     port: int = 0,
+    *,
+    allow_actions: bool | None = None,
 ) -> ThreadingHTTPServer:
-    """创建控制台服务器；端口为 0 时由系统分配，便于测试。"""
+    """创建控制台服务器；端口为 0 时由系统分配，便于测试。
 
-    return ThreadingHTTPServer((host, port), create_handler(store))
+    写接口默认只在绑定回环地址时开启：浏览器操作与命令行不同，用户看不到自己
+    在打哪个环境，因此把可写范围收在只对本机可见的地址上。
+    """
+
+    if allow_actions is None:
+        allow_actions = host in LOOPBACK_HOSTS
+    handler = create_handler(
+        store,
+        reports=ConclusionStore(store.runs_dir.parent / "reports"),
+        baselines=BaselineStore(store.runs_dir.parent / "baselines"),
+        allow_actions=allow_actions,
+    )
+    return ThreadingHTTPServer((host, port), handler)

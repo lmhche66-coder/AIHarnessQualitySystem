@@ -27,7 +27,7 @@ package-dir = { "" = "src" }
 where = ["src"]
 
 [tool.setuptools.package-data]
-"agenteval.console" = ["*.html", "*.js", "*.css"]
+"agenteval.console" = ["dist/*", "dist/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
