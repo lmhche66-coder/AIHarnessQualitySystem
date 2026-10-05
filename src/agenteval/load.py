@@ -151,6 +151,10 @@ def run_scenario(scenario: LoadScenario, base_url: str | None = None) -> LoadRep
     """按并发施压，直到请求总量或持续时间到达。"""
 
     url = resolve_url(scenario.target.url, base_url)
+    if "://" not in url:
+        raise ValueError(
+            f"scenario '{scenario.id}' target url must be absolute, or pass a base_url: {url}"
+        )
     counter = _count()
     samples: list[RequestSample] = []
     lock = threading.Lock()

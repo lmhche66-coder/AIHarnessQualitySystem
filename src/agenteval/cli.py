@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import argparse
-import importlib
-import importlib.util
 import json
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
+from agenteval.loading import LoadError
+from agenteval.loading import load_factory as load_factory_impl
+from agenteval.loading import load_registry as load_registry_impl
 from agenteval.cassette import (
     CASSETTES_DIRNAME,
     DEFAULT_SENSITIVE_FIELDS,
@@ -783,12 +783,16 @@ def _cmd_load(args: argparse.Namespace, store: RunStore) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    run = run_scenarios(
-        scenarios,
-        base_url=args.base_url,
-        store=store,
-        metadata={"scenarios_file": str(args.scenarios), "base_url": args.base_url},
-    )
+    try:
+        run = run_scenarios(
+            scenarios,
+            base_url=args.base_url,
+            store=store,
+            metadata={"scenarios_file": str(args.scenarios), "base_url": args.base_url},
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     reports = run.metadata.get("load_report") or []
     if args.json:
         print(json.dumps(reports, ensure_ascii=False, indent=2))
@@ -875,41 +879,18 @@ def _print_metrics(metadata: dict[str, Any]) -> None:
 
 
 def load_registry(ref: str | None) -> ToolRegistry:
-    """按 ``module:factory`` 或 ``path/to/module.py:factory`` 载入工具注册表。"""
+    """载入工具注册表；失败时以 SystemExit 结束，保持命令行行为。"""
 
-    factory = load_factory(ref, "registry")
-    registry = factory()
-    if not isinstance(registry, ToolRegistry):
-        raise SystemExit("registry factory must return a ToolRegistry instance")
-    return registry
+    try:
+        return load_registry_impl(ref)
+    except LoadError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def load_factory(ref: str | None, label: str) -> Callable[..., object]:
-    """载入工厂函数本身，而不是它的调用结果。
+    """载入工厂函数本身；失败时以 SystemExit 结束，保持命令行行为。"""
 
-    任务环境需要每个任务重建一次，因此这里必须拿到可重复调用的工厂。
-    """
-
-    if not ref or ":" not in ref:
-        raise SystemExit(f"--{label} must look like 'package.module:factory' or 'path/to/module.py:factory'")
-    target, _, attribute = ref.rpartition(":")
-    module = _load_module(Path(target)) if _looks_like_path(target) else importlib.import_module(target)
-    factory = getattr(module, attribute, None)
-    if factory is None:
-        raise SystemExit(f"{label} factory not found: {attribute}")
-    if not callable(factory):
-        raise SystemExit(f"{label} factory must be callable: {attribute}")
-    return factory
-
-
-def _looks_like_path(target: str) -> bool:
-    return target.endswith(".py") or "/" in target or "\\" in target
-
-
-def _load_module(path: Path) -> ModuleType:
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    if spec is None or spec.loader is None:
-        raise SystemExit(f"cannot load module from {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    try:
+        return load_factory_impl(ref, label)
+    except LoadError as exc:
+        raise SystemExit(str(exc)) from exc

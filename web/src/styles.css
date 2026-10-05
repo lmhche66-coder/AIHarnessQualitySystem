@@ -230,3 +230,60 @@ button { font: inherit; color: inherit; }
   .layout, .split { grid-template-columns: 1fr; }
   .sidebar { max-height: 40vh; border-bottom: 1px solid var(--line); }
 }
+
+.side-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.side-form input {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.prompt-line {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.answer {
+  padding: 10px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 120px;
+}
+.answer.chosen { border-color: var(--ok); }
+.answer-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.choice-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+  font-size: 12px;
+}
+
+@media (max-width: 720px) {
+  .pair { grid-template-columns: 1fr; }
+}

@@ -131,7 +131,7 @@ def test_unknown_run_returns_404(tmp_path: Path) -> None:
 def test_console_is_read_only(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs")
     with running_console(store) as base:
-        status, _ = fetch(f"{base}/api/runs", method="POST")
+        status, _ = fetch(f"{base}/api/nope", method="POST")
     assert status == 405
 
 

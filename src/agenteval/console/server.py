@@ -13,15 +13,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from agenteval.console.actions import ConsoleServices, OperationError
 from agenteval.gate import Baseline, BaselineStore
 from agenteval.models import Run
-from agenteval.reports import ConclusionStore
 from agenteval.store import SUMMARY_FILENAME, RunStore
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
 MAX_RUNS = 200
 DIST_DIRNAME = "dist"
+MAX_BODY_BYTES = 2_000_000
+HARD_BODY_BYTES = 32_000_000
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -158,16 +160,32 @@ def baselines_payload(store: BaselineStore) -> list[dict[str, Any]]:
     return entries
 
 
-def create_handler(
-    store: RunStore,
-    *,
-    reports: ConclusionStore,
-    baselines: BaselineStore,
-    allow_actions: bool,
-) -> type[BaseHTTPRequestHandler]:
+def trace_listing(services: ConsoleServices) -> list[dict[str, Any]]:
+    """列出已保存轨迹及其来源，便于导入视图确认结果。"""
+
+    entries: list[dict[str, Any]] = []
+    for name in services.traces.store.list_traces():
+        meta = services.traces.store.metadata(name)
+        entries.append(
+            {
+                "name": name,
+                "case_id": meta.case_id if meta else name,
+                "events": meta.event_count if meta else 0,
+                "source": meta.source if meta else None,
+            }
+        )
+    return entries
+
+
+def create_handler(services: ConsoleServices) -> type[BaseHTTPRequestHandler]:
     """构造绑定到指定存储的请求处理器，便于测试直接注入临时目录。"""
 
     from agenteval.gate import DEFAULT_BASELINE_NAME
+
+    store = services.runs
+    reports = services.reports
+    baselines = services.baselines
+    allow_actions = services.allow_actions
 
     class ConsoleHandler(BaseHTTPRequestHandler):
         server_version = "agenteval-console"
@@ -244,6 +262,18 @@ def create_handler(
                 if parts == ["api", "baselines"]:
                     self._send_json({"baselines": baselines_payload(baselines)})
                     return
+                if parts == ["api", "gold"]:
+                    self._send_json({"sets": services.gold.list_sets()})
+                    return
+                if len(parts) == 3 and parts[:2] == ["api", "gold"]:
+                    self._send_json(services.gold.detail(parts[2]))
+                    return
+                if parts == ["api", "traces"]:
+                    self._send_json({"traces": trace_listing(services)})
+                    return
+                if parts == ["api", "cases"]:
+                    self._send_json({"cases": services.list_cases_files()})
+                    return
                 if len(parts) == 3 and parts[:2] == ["api", "runs"]:
                     self._send_json(run_detail_payload(store, parts[2]))
                     return
@@ -261,35 +291,77 @@ def create_handler(
 
         def _route_action(self, path: str) -> None:
             parts = [unquote(part) for part in path.strip("/").split("/") if part]
-            if parts == ["api", "baselines"]:
-                body = self._read_json_body()
-                if body is None:
-                    return
-                run_id = str(body.get("run_id") or "").strip()
-                name = str(body.get("name") or DEFAULT_BASELINE_NAME).strip()
-                if not run_id:
-                    self._send_json({"error": "run_id is required"}, status=400)
-                    return
-                try:
-                    run = store.load(run_id)
-                except FileNotFoundError as exc:
-                    self._send_json({"error": str(exc)}, status=404)
-                    return
-                baseline = Baseline.from_run(run, name=name or DEFAULT_BASELINE_NAME)
-                baselines.save(baseline)
-                self._send_json(
-                    {"name": baseline.name, "run_id": baseline.run_id, "cases": len(baseline.verdicts)},
-                    status=201,
-                )
+            handler = self._action_handler(parts)
+            if handler is None:
+                self._send_json({"error": "method not allowed"}, status=405)
                 return
-            self._send_json({"error": "method not allowed"}, status=405)
+            body = self._read_json_body()
+            if body is None:
+                return
+            try:
+                payload, status = handler(body)
+            except OperationError as exc:
+                self._send_json({"error": str(exc)}, status=exc.status)
+                return
+            except Exception as exc:  # noqa: BLE001 - 兜底，避免异常只留在线程里
+                self._send_json({"error": f"{type(exc).__name__}: {exc}"}, status=500)
+                return
+            self._send_json(payload, status=status)
+
+        def _action_handler(self, parts: list[str]) -> Any:
+            if parts == ["api", "baselines"]:
+                return self._capture_baseline
+            if parts == ["api", "gold"]:
+                return lambda body: (services.gold.create(body), 201)
+            if len(parts) == 4 and parts[:2] == ["api", "gold"] and parts[3] == "labels":
+                return lambda body: (services.gold.label(parts[2], body), 200)
+            if parts == ["api", "traces"]:
+                return lambda body: (services.traces.upload(body), 201)
+            if parts == ["api", "reflow"]:
+                return lambda body: (services.reflow.analyze(body), 200)
+            if parts == ["api", "cases"]:
+                return lambda body: (services.reflow.write(body), 201)
+            if parts == ["api", "runs"]:
+                return lambda body: (services.runner.trigger(body), 201)
+            return None
+
+        def _capture_baseline(self, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
+            run_id = str(body.get("run_id") or "").strip()
+            name = str(body.get("name") or DEFAULT_BASELINE_NAME).strip()
+            if not run_id:
+                raise OperationError("run_id is required")
+            try:
+                run = store.load(run_id)
+            except FileNotFoundError as exc:
+                raise OperationError(str(exc), status=404) from exc
+            baseline = Baseline.from_run(run, name=name or DEFAULT_BASELINE_NAME)
+            baselines.save(baseline)
+            return (
+                {
+                    "name": baseline.name,
+                    "run_id": baseline.run_id,
+                    "cases": len(baseline.verdicts),
+                },
+                201,
+            )
 
         def _read_json_body(self) -> dict[str, Any] | None:
             length = int(self.headers.get("Content-Length") or 0)
             if length <= 0:
                 self._send_json({"error": "request body is required"}, status=400)
                 return None
+            if length > HARD_BODY_BYTES:
+                self.close_connection = True
+                self._send_json(
+                    {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"}, status=413
+                )
+                return None
             raw = self.rfile.read(length)
+            if length > MAX_BODY_BYTES:
+                self._send_json(
+                    {"error": f"request body exceeds {MAX_BODY_BYTES} bytes"}, status=413
+                )
+                return None
             try:
                 payload = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
@@ -330,10 +402,5 @@ def create_server(
 
     if allow_actions is None:
         allow_actions = host in LOOPBACK_HOSTS
-    handler = create_handler(
-        store,
-        reports=ConclusionStore(store.runs_dir.parent / "reports"),
-        baselines=BaselineStore(store.runs_dir.parent / "baselines"),
-        allow_actions=allow_actions,
-    )
+    handler = create_handler(ConsoleServices.for_home(store, allow_actions))
     return ThreadingHTTPServer((host, port), handler)
