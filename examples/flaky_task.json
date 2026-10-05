@@ -1,0 +1,13 @@
+{
+  "tasks": [
+    {
+      "id": "task-flaky-charge",
+      "kind": "task",
+      "attempts": 3,
+      "description": "第一次尝试故意不完成，用于演示 pass@k 与 pass@1 的差异",
+      "checks": [
+        { "kind": "final_state", "tool": "ledger_tool", "field": "balance", "expected": 30 }
+      ]
+    }
+  ]
+}

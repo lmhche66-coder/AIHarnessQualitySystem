@@ -293,6 +293,31 @@ tasks: 2  resolved: 2  resolved_rate: 1.0000
 
 agent 抛异常记为 error（没跑起来），判据不满足记为未解决（跑了但没做对），两者分开列出，因为排查方向完全不同。全部任务解决时退出码为 0，否则为 1；空任务集不算通过，避免在空集上拿到满分。
 
+### 重复尝试与 pass@k
+
+任务可以声明尝试次数。每次尝试从全新环境与全新 agent 开始，逐次产出独立判定：
+
+```json
+{
+  "id": "task-flaky-charge",
+  "kind": "task",
+  "attempts": 3,
+  "checks": [{ "kind": "final_state", "tool": "ledger_tool", "field": "balance", "expected": 30 }]
+}
+```
+
+```
+tasks: 1  resolved: 1  resolved_rate: 1.0000
+attempts: 3  pass@1: 0.0000  pass@k: 1.0000
+  [fail ] task-flaky-charge#1
+  [pass ] task-flaky-charge#2
+  [pass ] task-flaky-charge#3
+```
+
+`pass@1` 与 `pass@k` 分开报，是为了区分「做不成」与「不稳定」：这条任务一次都没成（pass@1 = 0），但三次内能成（pass@k = 1）。只跑一次会把这种 agent 误判为不具备能力。
+
+逐次判定意味着门禁能按尝试维度设阈值——稳定的任务可以要求每次通过，波动的任务用比例阈值。默认尝试一次，此时判定标识不带序号，既有基线与回归资产无需重建。
+
 任务结果就是普通的 Verdict 与运行记录，因此门禁零改动即可覆盖任务成功率：
 
 ```bash

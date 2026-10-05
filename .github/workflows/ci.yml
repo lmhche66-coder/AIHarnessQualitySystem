@@ -97,3 +97,10 @@ jobs:
             echo "a position-biased judge must not be usable for the gate"
             exit 1
           fi
+
+      - name: Measure pass@k with repeated attempts
+        run: |
+          python -m agenteval --home .agenteval task run \
+            --tasks examples/flaky_task.json \
+            --registry agenteval.fakes:build_task_registry \
+            --agent examples/demo_agent.py:build_flaky_agent

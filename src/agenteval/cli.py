@@ -553,6 +553,13 @@ def _print_task_run(run: Run, report: dict[str, Any]) -> None:
         f"tasks: {report.get('total', 0)}  resolved: {report.get('resolved', 0)}  "
         f"resolved_rate: {report.get('resolved_rate', 0.0):.4f}"
     )
+    attempts = run.metadata.get("attempt_report")
+    if isinstance(attempts, dict) and attempts.get("attempts", 0) > attempts.get("tasks", 0):
+        print(
+            f"attempts: {attempts.get('attempts', 0)}  "
+            f"pass@1: {attempts.get('pass_at_1', 0.0):.4f}  "
+            f"pass@k: {attempts.get('pass_at_k', 0.0):.4f}"
+        )
     _print_metrics(run.metadata)
     for verdict in run.verdicts:
         print(f"  [{verdict.status.value:<5}] {verdict.case_id}  ({verdict.duration_ms:.1f} ms)")

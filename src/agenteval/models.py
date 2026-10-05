@@ -215,6 +215,7 @@ class TaskCase(BaseModel):
     id: str = Field(min_length=1)
     kind: Literal["task"] = "task"
     description: str | None = None
+    attempts: int = Field(default=1, ge=1)
     checks: list[TaskCheckSpec] = Field(default_factory=list)
 
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +42,19 @@ AgentRunner = Callable[[ToolRegistry, TaskCase], None]
 EnvironmentFactory = Callable[[], ToolRegistry]
 
 _TASK_LIST_ADAPTER: TypeAdapter[list[TaskCase]] = TypeAdapter(list[TaskCase])
+
+ATTEMPT_SEPARATOR = "#"
+
+
+def attempt_case_id(task_id: str, attempt: int, attempts: int) -> str:
+    """单次尝试保持既有标识，多次尝试才追加序号。
+
+    既有基线与回归资产都以判定标识为键，默认一次时标识不能变。
+    """
+
+    if attempts <= 1:
+        return task_id
+    return f"{task_id}{ATTEMPT_SEPARATOR}{attempt}"
 
 
 def load_tasks(path: Path) -> list[TaskCase]:
@@ -152,18 +165,29 @@ def evaluate_task_checks(
     return outcomes
 
 
+def _task_statuses(task: TaskCase, by_id: Mapping[str, Verdict]) -> list[Status]:
+    return [
+        by_id[key].status
+        for attempt in range(1, task.attempts + 1)
+        if (key := attempt_case_id(task.id, attempt, task.attempts)) in by_id
+    ]
+
+
 def summarize_tasks(tasks: Sequence[TaskCase], verdicts: Sequence[Verdict]) -> dict[str, Any]:
-    """统计通过率，并分别列出未解决与出错的任务。"""
+    """统计通过率，并分别列出未解决与出错的任务。
+
+    任务声明多次尝试时，只要任一次通过即视为已解决。
+    """
 
     by_id = {verdict.case_id: verdict for verdict in verdicts}
     resolved: list[str] = []
     unresolved: list[str] = []
     errored: list[str] = []
     for task in tasks:
-        verdict = by_id.get(task.id)
-        if verdict is None or verdict.status is Status.ERROR:
+        statuses = _task_statuses(task, by_id)
+        if not statuses or all(status is Status.ERROR for status in statuses):
             errored.append(task.id)
-        elif verdict.status is Status.PASS:
+        elif any(status is Status.PASS for status in statuses):
             resolved.append(task.id)
         else:
             unresolved.append(task.id)
@@ -178,6 +202,40 @@ def summarize_tasks(tasks: Sequence[TaskCase], verdicts: Sequence[Verdict]) -> d
     }
 
 
+def summarize_attempts(
+    tasks: Sequence[TaskCase], verdicts: Sequence[Verdict]
+) -> dict[str, Any]:
+    """按尝试聚合，区分「做不成」与「不稳定」。"""
+
+    by_id = {verdict.case_id: verdict for verdict in verdicts}
+    details: list[dict[str, Any]] = []
+    resolved = 0
+    first_pass = 0
+    for task in tasks:
+        statuses = _task_statuses(task, by_id)
+        task_resolved = any(status is Status.PASS for status in statuses)
+        resolved += task_resolved
+        first_pass += bool(statuses) and statuses[0] is Status.PASS
+        details.append(
+            {
+                "task_id": task.id,
+                "attempts": task.attempts,
+                "passed": sum(1 for status in statuses if status is Status.PASS),
+                "resolved": task_resolved,
+                "pass_at_1": bool(statuses) and statuses[0] is Status.PASS,
+            }
+        )
+    total = len(tasks)
+    return {
+        "tasks": total,
+        "attempts": sum(task.attempts for task in tasks),
+        "resolved": resolved,
+        "pass_at_k": (resolved / total) if total else 0.0,
+        "pass_at_1": (first_pass / total) if total else 0.0,
+        "details": details,
+    }
+
+
 @dataclass
 class TaskRunner:
     """执行端到端任务。"""
@@ -187,15 +245,24 @@ class TaskRunner:
     store: RunStore | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def run_task(self, task: TaskCase) -> tuple[Verdict, Trace]:
-        """在干净环境里跑一个任务，返回判定与轨迹。"""
+    def run_task(self, task: TaskCase, attempt: int = 1) -> tuple[Verdict, Trace]:
+        """在干净环境里跑一次任务，返回判定与轨迹。
 
-        trace = Trace(case_id=task.id)
+        每次尝试都重建环境与 agent，避免上一次尝试的残留影响本次。
+        """
+
+        case_id = attempt_case_id(task.id, attempt, task.attempts)
+        trace = Trace(case_id=case_id)
         start = time.perf_counter()
         try:
             registry = self.environment()
         except Exception as exc:  # noqa: BLE001 - 环境失败不终止整轮运行
-            return self._error(task, f"environment setup failed: {type(exc).__name__}: {exc}", trace, start)
+            return self._error(
+                case_id,
+                f"environment setup failed: {type(exc).__name__}: {exc}",
+                trace,
+                start,
+            )
 
         session = TraceSession()
         session.begin_case(trace)
@@ -203,7 +270,9 @@ class TaskRunner:
             self.agent(wrap_registry_for_trace(registry, session), task)
         except Exception as exc:  # noqa: BLE001 - agent 异常不终止整轮运行
             session.end_case()
-            return self._error(task, f"agent raised: {type(exc).__name__}: {exc}", trace, start)
+            return self._error(
+                case_id, f"agent raised: {type(exc).__name__}: {exc}", trace, start
+            )
         session.end_case()
 
         if not task.checks:
@@ -219,7 +288,7 @@ class TaskRunner:
         else:
             checks = evaluate_task_checks(task, registry, trace)
         status = Status.PASS if all(check.passed for check in checks) else Status.FAIL
-        verdict = Verdict(case_id=task.id, status=status, checks=checks)
+        verdict = Verdict(case_id=case_id, status=status, checks=checks)
         verdict.duration_ms = round((time.perf_counter() - start) * 1000, 3)
         verdict.metrics = measure_calls(trace)
         return verdict, trace
@@ -239,10 +308,12 @@ class TaskRunner:
             metadata=merged_metadata,
         )
         for task in task_list:
-            verdict, trace = self.run_task(task)
-            run.verdicts.append(verdict)
-            run.traces.append(trace)
+            for attempt in range(1, task.attempts + 1):
+                verdict, trace = self.run_task(task, attempt)
+                run.verdicts.append(verdict)
+                run.traces.append(trace)
         run.metadata["task_report"] = summarize_tasks(task_list, run.verdicts)
+        run.metadata["attempt_report"] = summarize_attempts(task_list, run.verdicts)
         run.metadata["metrics"] = summarize_metrics(run.verdicts).model_dump(mode="json")
         run.finished_at = datetime.now(timezone.utc)
         run.refresh_summary()
@@ -251,7 +322,9 @@ class TaskRunner:
         return run
 
     @staticmethod
-    def _error(task: TaskCase, message: str, trace: Trace, start: float) -> tuple[Verdict, Trace]:
-        verdict = Verdict(case_id=task.id, status=Status.ERROR, error=message)
+    def _error(
+        case_id: str, message: str, trace: Trace, start: float
+    ) -> tuple[Verdict, Trace]:
+        verdict = Verdict(case_id=case_id, status=Status.ERROR, error=message)
         verdict.duration_ms = round((time.perf_counter() - start) * 1000, 3)
         return verdict, trace
