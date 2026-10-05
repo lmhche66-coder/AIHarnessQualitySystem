@@ -32,11 +32,18 @@ from agenteval.gate import (
     format_report,
 )
 from agenteval.models import Run
+from agenteval.models import AnyCase
 from agenteval.runner import ContractRunner, load_cases
 from agenteval.store import RUNS_DIRNAME, RunStore
 from agenteval.tasks import TaskRunner, load_tasks
 from agenteval.trace_store import TRACES_DIRNAME, TraceStore, extract_trace
 from agenteval.tools import ToolRegistry
+from agenteval.triage import (
+    DEFAULT_TRACE_PREFIX,
+    format_report as format_triage_report,
+    triage_run,
+    write_candidates,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -141,6 +148,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="agent factory as 'package.module:factory' or 'path/to/module.py:factory'",
     )
     task_run_parser.add_argument("--json", action="store_true", help="emit the task report as JSON")
+
+    triage_parser = subparsers.add_parser(
+        "triage", help="attribute failures and reflow them into regression cases"
+    )
+    triage_parser.add_argument("--run", dest="run_id", help="run id (default: latest)")
+    triage_parser.add_argument(
+        "--cases", type=Path, help="original cases file (default: the one recorded in the run)"
+    )
+    triage_parser.add_argument(
+        "--emit", type=Path, help="write reflowable candidate cases to this file"
+    )
+    triage_parser.add_argument(
+        "--trace-prefix",
+        default=DEFAULT_TRACE_PREFIX,
+        help=f"prefix for saved evidence traces (default: {DEFAULT_TRACE_PREFIX})",
+    )
+    triage_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -161,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_trace(args, store)
     if args.command == "task":
         return _cmd_task(args, store)
+    if args.command == "triage":
+        return _cmd_triage(args, store)
     return 2
 
 
@@ -219,6 +245,7 @@ def _cmd_run(args: argparse.Namespace, store: RunStore) -> int:
         cassette_session=session,
         trace_override=trace_override,
         trace_name=args.trace,
+        trace_resolver=_trace_store_from_args(args).load,
     )
     run = runner.run(cases, metadata=metadata)
     _print_run(run)
@@ -455,6 +482,63 @@ def _print_task_run(run: Run, report: dict[str, Any]) -> None:
         print(f"unresolved: {', '.join(unresolved)}")
     if errored:
         print(f"errored: {', '.join(errored)}")
+
+
+def _cmd_triage(args: argparse.Namespace, store: RunStore) -> int:
+    run_id = args.run_id or _latest_run_id(store)
+    if run_id is None:
+        print("no runs recorded", file=sys.stderr)
+        return 2
+    try:
+        run = store.load(run_id)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    cases_path: Path | None = args.cases
+    if cases_path is None:
+        recorded = run.metadata.get("cases_file") or run.metadata.get("tasks_file")
+        if not recorded:
+            print("run does not record its cases file; pass --cases", file=sys.stderr)
+            return 2
+        cases_path = Path(str(recorded))
+    try:
+        cases = _load_original_cases(cases_path)
+    except FileNotFoundError:
+        print(f"original cases file not found: {cases_path}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    report, candidates = triage_run(
+        run,
+        cases,
+        _trace_store_from_args(args),
+        trace_prefix=args.trace_prefix,
+    )
+    if args.emit is not None:
+        write_candidates(args.emit, candidates)
+    if args.json:
+        print(report.model_dump_json(indent=2))
+    else:
+        print(format_triage_report(report))
+        if args.emit is not None:
+            print(f"candidates: {len(candidates)} written to {args.emit}")
+
+    unverified = [
+        detail.case_id for detail in report.details if detail.reflowable and not detail.verified
+    ]
+    return 1 if unverified else 0
+
+
+def _load_original_cases(path: Path) -> list[AnyCase]:
+    """归因需要原始用例定义；这里同时接受用例文件与任务文件。"""
+
+    try:
+        return list(load_cases(path))
+    except ValueError:
+        return list(load_tasks(path))
 
 
 def _print_run(run: Run) -> None:

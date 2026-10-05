@@ -168,6 +168,7 @@ class ProcessCase(BaseModel):
     id: str = Field(min_length=1)
     kind: Literal["process"] = "process"
     description: str | None = None
+    trace: str | None = None
     steps: list[ProcessStep] = Field(default_factory=list)
     checks: list[ProcessCheckSpec] = Field(default_factory=list)
 

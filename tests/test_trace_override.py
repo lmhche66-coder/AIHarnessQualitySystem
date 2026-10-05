@@ -9,8 +9,10 @@ import pytest
 from agenteval.cli import main
 from agenteval.fakes import build_demo_registry
 from agenteval.models import ProcessCase, Status, Trace
+from agenteval.process import record_tool_call
 from agenteval.runner import ContractRunner, load_cases
 from agenteval.store import RunStore
+from agenteval.trace_store import TraceStore
 from agenteval.tools import ToolRegistry, ToolResult
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -76,6 +78,46 @@ def test_case_without_steps_or_trace_is_error(tmp_path: Path) -> None:
     verdict, _ = runner.run_case(case)
     assert verdict.status is Status.ERROR
     assert "no stored trace was supplied" in (verdict.error or "")
+
+
+def test_case_level_trace_reference_wins_over_run_level(tmp_path: Path) -> None:
+    store = TraceStore(tmp_path / "traces")
+    good = Trace(case_id="p1")
+    record_tool_call(good, "echo_tool", {}, ToolResult(ok=True))
+    store.save("good", good)
+    store.save("empty", Trace(case_id="p1"))
+
+    case = ProcessCase.model_validate(
+        {
+            "id": "p1",
+            "trace": "good",
+            "checks": [{"kind": "tool_sequence", "expected": ["echo_tool"], "mode": "exact"}],
+        }
+    )
+    runner = ContractRunner(
+        registry=ToolRegistry([]),
+        trace_override=store.load("empty"),
+        trace_resolver=store.load,
+    )
+    verdict, trace = runner.run_case(case)
+    assert verdict.status is Status.PASS
+    assert [event.name for event in trace.events] == ["tool_call"]
+
+
+def test_missing_case_level_trace_reports_error(tmp_path: Path) -> None:
+    case = ProcessCase.model_validate(
+        {
+            "id": "p1",
+            "trace": "ghost",
+            "checks": [{"kind": "tool_sequence", "expected": ["a"]}],
+        }
+    )
+    runner = ContractRunner(
+        registry=ToolRegistry([]), trace_resolver=TraceStore(tmp_path / "traces").load
+    )
+    verdict, _ = runner.run_case(case)
+    assert verdict.status is Status.ERROR
+    assert "trace not found: ghost" in (verdict.error or "")
 
 
 def write_import_cases(path: Path, case_id: str) -> None:

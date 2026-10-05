@@ -61,3 +61,17 @@ jobs:
             --registry agenteval.fakes:build_task_registry \
             --agent examples/demo_agent.py:build_agent
           python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0
+
+      - name: Reflow a failure into a regression case
+        run: |
+          # 探针用例故意失败，失败本身是这一步的预期输入
+          python -m agenteval --home .agenteval run \
+            --cases examples/reflow_probe.json --demo || true
+          python -m agenteval --home .agenteval triage \
+            --emit /tmp/candidates.json --json > /tmp/triage.json
+          python -c "import json; r=json.load(open('/tmp/triage.json')); assert r['total_failures'] == 1 and r['verified'] == 1, r"
+          if python -m agenteval --home .agenteval run \
+            --cases /tmp/candidates.json --demo > /dev/null; then
+            echo "candidate no longer reproduces the original failure"
+            exit 1
+          fi

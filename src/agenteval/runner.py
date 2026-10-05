@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -94,31 +95,53 @@ class ContractRunner:
     cassette_session: CassetteSession | None = None
     trace_override: Trace | None = None
     trace_name: str | None = None
+    trace_resolver: Callable[[str], Trace] | None = None
+    _used_traces: list[str] = field(default_factory=list, repr=False)
 
     def run_case(self, case: AnyCase) -> tuple[Verdict, Trace]:
         """执行单条用例，返回判定与轨迹。"""
 
-        trace = self._trace_for(case)
+        trace = Trace(case_id=case.id)
         session = self.cassette_session
         if session is not None:
             session.begin_case(trace)
         start = time.perf_counter()
         try:
-            verdict = self._evaluate(case, trace)
+            override, failure = self._resolve_trace_override(case)
+            if failure is not None:
+                verdict = Verdict(case_id=case.id, status=Status.ERROR, error=failure)
+            else:
+                if override is not None:
+                    trace = override
+                verdict = self._evaluate(case, trace, override)
         finally:
             if session is not None:
                 session.end_case()
         verdict.duration_ms = round((time.perf_counter() - start) * 1000, 3)
         return verdict, trace
 
-    def _trace_for(self, case: AnyCase) -> Trace:
-        """过程用例引用外部轨迹时直接复用它，其余情况为用例新建一条空轨迹。"""
+    def _resolve_trace_override(self, case: AnyCase) -> tuple[Trace | None, str | None]:
+        """解析该用例要引用的已保存轨迹，返回 ``(轨迹, 错误说明)``。
 
-        if isinstance(case, ProcessCase) and self.trace_override is not None:
-            return self.trace_override
-        return Trace(case_id=case.id)
+        用例级引用优先于运行级引用，因为一次失败回流的候选各自绑定不同证据。
+        """
 
-    def _evaluate(self, case: AnyCase, trace: Trace) -> Verdict:
+        if not isinstance(case, ProcessCase):
+            return None, None
+        if case.trace:
+            if self.trace_resolver is None:
+                return None, (
+                    f"case references stored trace '{case.trace}' but no trace store is configured"
+                )
+            try:
+                resolved = self.trace_resolver(case.trace)
+            except FileNotFoundError as exc:
+                return None, str(exc)
+            self._used_traces.append(case.trace)
+            return resolved, None
+        return self.trace_override, None
+
+    def _evaluate(self, case: AnyCase, trace: Trace, override: Trace | None) -> Verdict:
         if isinstance(case, TaskCase):
             return Verdict(
                 case_id=case.id,
@@ -126,7 +149,7 @@ class ContractRunner:
                 error="task cases must be run with 'agenteval task run', not 'agenteval run'",
             )
         if isinstance(case, ProcessCase):
-            return self._evaluate_process(case, trace)
+            return self._evaluate_process(case, trace, override)
         blocked = _non_replayable_reason(case, self.cassette_session)
         if blocked is not None:
             trace.record(
@@ -148,8 +171,8 @@ class ContractRunner:
                 error=f"{type(exc).__name__}: {exc}",
             )
 
-    def _evaluate_process(self, case: ProcessCase, trace: Trace) -> Verdict:
-        if self.trace_override is not None:
+    def _evaluate_process(self, case: ProcessCase, trace: Trace, override: Trace | None) -> Verdict:
+        if override is not None:
             if case.steps:
                 return Verdict(
                     case_id=case.id,
@@ -219,6 +242,8 @@ class ContractRunner:
         merged_metadata.update(metadata or {})
         if self.trace_name is not None:
             merged_metadata.setdefault("trace_name", self.trace_name)
+        if self._used_traces:
+            merged_metadata["trace_names"] = sorted(set(self._used_traces))
         run = Run(
             run_id=run_id or new_run_id(),
             started_at=datetime.now(timezone.utc),

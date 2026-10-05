@@ -299,6 +299,44 @@ agent 抛异常记为 error（没跑起来），判据不满足记为未解决�
 python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0
 ```
 
+## 失败回流
+
+看到「用例没过」之后，下一步应该是把它变成可反复执行的回归用例。否则真实失败样本永远停在报告里，这是质量闭环最常缺的一环。
+
+```bash
+# 归因最近一次运行，并把可复现的失败写成候选用例
+python -m agenteval --home .agenteval triage --emit candidates.json
+```
+
+```
+run: 20261004T093000Z-1a2b3c4d
+failures: 1  reflowable: 1  verified: 1
+  [fail] reflow-probe
+         - tool_sequence.exact: expected=['payout_tool'] actual=['echo_tool']
+         reflow: verified=True trace=repro-reflow-probe candidate=reflow-probe@repro
+```
+
+它做三件事：保存证据轨迹、生成绑定该轨迹的候选用例、并**自证**候选用例确实复现了原失败。生成的候选可以直接重跑：
+
+```bash
+python -m agenteval --home .agenteval run --cases candidates.json --demo
+```
+
+一条重要边界：**期望一律沿用原用例，绝不从失败轨迹反推**。失败轨迹记录的是 agent 做了什么，不是它该做什么；反推出来的期望必然通过，看起来闭环了，实际什么都没守住。依赖环境状态的失败（终态判据）会被标记为不可自动回流，而不是被悄悄转成一条假通过用例。
+
+候选用例通过用例级 `trace` 字段绑定自己的证据轨迹，因此多条候选可以在同一次运行里各自绑定不同轨迹：
+
+```json
+{
+  "id": "reflow-probe@repro",
+  "kind": "process",
+  "trace": "repro-reflow-probe",
+  "checks": [{ "kind": "tool_sequence", "expected": ["payout_tool"], "mode": "exact" }]
+}
+```
+
+归因需要原始用例定义，默认取运行元信息里记录的文件路径，也可以用 `--cases` 指定。
+
 ## 在 pytest 里运行
 
 ```bash

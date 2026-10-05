@@ -1,0 +1,11 @@
+{
+  "cases": [
+    {
+      "id": "reflow-probe",
+      "kind": "process",
+      "description": "故意失败的探针用例，用于演示失败回流",
+      "steps": [{ "target": "echo_tool", "input": { "message": "hi" } }],
+      "checks": [{ "kind": "tool_sequence", "expected": ["payout_tool"], "mode": "exact" }]
+    }
+  ]
+}
