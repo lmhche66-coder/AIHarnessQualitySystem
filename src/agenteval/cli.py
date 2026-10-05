@@ -28,6 +28,7 @@ from agenteval.audit_import import (
     fidelity_report,
     load_audit_records,
 )
+from agenteval.console.server import DEFAULT_HOST, DEFAULT_PORT, create_server
 from agenteval.fakes import build_demo_registry
 from agenteval.gate import (
     BASELINES_DIRNAME,
@@ -209,6 +210,10 @@ def build_parser() -> argparse.ArgumentParser:
     judge_calibrate_parser.add_argument("--max-position-flip", type=float, default=0.2)
     judge_calibrate_parser.add_argument("--max-length-bias", type=float, default=0.8)
     judge_calibrate_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    serve_parser = subparsers.add_parser("serve", help="open the local read-only console")
+    serve_parser.add_argument("--host", default=DEFAULT_HOST, help=f"bind address (default: {DEFAULT_HOST})")
+    serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port (default: {DEFAULT_PORT})")
     return parser
 
 
@@ -233,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_triage(args, store)
     if args.command == "judge":
         return _cmd_judge(args)
+    if args.command == "serve":
+        return _cmd_serve(args, store)
     return 2
 
 
@@ -662,6 +669,21 @@ def _cmd_judge(args: argparse.Namespace) -> int:
     else:
         print(format_judge_report(report))
     return 0 if report.usable_for_gate else 1
+
+
+def _cmd_serve(args: argparse.Namespace, store: RunStore) -> int:
+    server = create_server(store, host=args.host, port=args.port)
+    host = str(server.server_address[0])
+    port = int(server.server_address[1])
+    print(f"agenteval console: http://{host}:{port}")
+    print(f"runs: {len(store.list_runs())}  home: {store.runs_dir.parent}")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("stopped")
+    finally:
+        server.server_close()
+    return 0
 
 
 def _print_run(run: Run) -> None:
