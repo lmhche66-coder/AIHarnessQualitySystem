@@ -12,13 +12,17 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agenteval.cassette import fingerprint
 from agenteval.models import (
+    BudgetCheck,
+    CaseMetrics,
     CheckOutcome,
     NoExtraCallsCheck,
     ProcessCase,
     RecoveryCheck,
     StateContinuityCheck,
     Status,
+    TokenUsage,
     ToolSequenceCheck,
     Trace,
     Verdict,
@@ -40,6 +44,7 @@ class ToolCall(BaseModel):
     error_kind: str | None = None
     attempts: int = 1
     value: Any = None
+    usage: TokenUsage | None = None
 
 
 def record_tool_call(
@@ -64,6 +69,7 @@ def record_tool_call(
             "error_kind": error_kind,
             "attempts": result.attempts,
             "value": result.value,
+            "usage": result.usage.model_dump() if result.usage is not None else None,
         },
     )
 
@@ -76,6 +82,7 @@ def extract_tool_calls(trace: Trace) -> list[ToolCall]:
         if event.name != TOOL_CALL_EVENT:
             continue
         payload = event.payload
+        usage_payload = payload.get("usage")
         calls.append(
             ToolCall(
                 index=len(calls),
@@ -85,15 +92,56 @@ def extract_tool_calls(trace: Trace) -> list[ToolCall]:
                 error_kind=payload.get("error_kind"),
                 attempts=int(payload.get("attempts") or 1),
                 value=payload.get("value"),
+                usage=(
+                    TokenUsage.model_validate(usage_payload)
+                    if isinstance(usage_payload, dict)
+                    else None
+                ),
             )
         )
     return calls
 
 
-def process_handler(kind: str) -> Callable[[Any, list[ToolCall]], list[CheckOutcome]] | None:
+def process_handler(
+    kind: str,
+) -> Callable[[Any, list[ToolCall], Trace], list[CheckOutcome]] | None:
     """按检查类型取出过程断言处理器，供任务层复用。"""
 
     return _HANDLERS.get(kind)
+
+
+def trace_duration_ms(trace: Trace) -> float:
+    """轨迹首尾事件的时间差，衡量工具调用跨度，不含模型思考时间。"""
+
+    if len(trace.events) < 2:
+        return 0.0
+    span = trace.events[-1].at - trace.events[0].at
+    return round(span.total_seconds() * 1000, 3)
+
+
+def count_repeated_calls(calls: Sequence[ToolCall]) -> int:
+    """按「相同目标与相同参数」统计重复次数，对应成本随重试膨胀。"""
+
+    counts: dict[str, int] = {}
+    for call in calls:
+        key = fingerprint(call.target, call.args)
+        counts[key] = counts.get(key, 0) + 1
+    return sum(count - 1 for count in counts.values() if count > 1)
+
+
+def measure_calls(trace: Trace, calls: Sequence[ToolCall] | None = None) -> CaseMetrics:
+    """推导单条用例的运行指标。"""
+
+    normalized = list(calls) if calls is not None else extract_tool_calls(trace)
+    reported = [call.usage for call in normalized if call.usage is not None]
+    return CaseMetrics(
+        calls=len(normalized),
+        retries=count_repeated_calls(normalized),
+        duration_ms=trace_duration_ms(trace),
+        input_tokens=sum(usage.input_tokens for usage in reported),
+        output_tokens=sum(usage.output_tokens for usage in reported),
+        usage_reported=bool(reported),
+    )
 
 
 @dataclass
@@ -169,12 +217,14 @@ def check_process_case(case: ProcessCase, trace: Trace) -> Verdict:
                 )
             )
             continue
-        outcomes.extend(handler(spec, calls))
+        outcomes.extend(handler(spec, calls, trace))
     status = Status.PASS if outcomes and all(item.passed for item in outcomes) else Status.FAIL
     return Verdict(case_id=case.id, status=status, checks=outcomes)
 
 
-def _check_tool_sequence(spec: Any, calls: list[ToolCall]) -> list[CheckOutcome]:
+def _check_tool_sequence(
+    spec: Any, calls: list[ToolCall], trace: Trace
+) -> list[CheckOutcome]:
     check: ToolSequenceCheck = spec
     if not check.expected:
         return [
@@ -201,7 +251,9 @@ def _check_tool_sequence(spec: Any, calls: list[ToolCall]) -> list[CheckOutcome]
     ]
 
 
-def _check_no_extra_calls(spec: Any, calls: list[ToolCall]) -> list[CheckOutcome]:
+def _check_no_extra_calls(
+    spec: Any, calls: list[ToolCall], trace: Trace
+) -> list[CheckOutcome]:
     check: NoExtraCallsCheck = spec
     if not check.allowed:
         return [
@@ -226,7 +278,7 @@ def _check_no_extra_calls(spec: Any, calls: list[ToolCall]) -> list[CheckOutcome
     ]
 
 
-def _check_recovery(spec: Any, calls: list[ToolCall]) -> list[CheckOutcome]:
+def _check_recovery(spec: Any, calls: list[ToolCall], trace: Trace) -> list[CheckOutcome]:
     check: RecoveryCheck = spec
     if not check.failed_tool:
         return [
@@ -277,7 +329,9 @@ def _check_recovery(spec: Any, calls: list[ToolCall]) -> list[CheckOutcome]:
     ]
 
 
-def _check_state_continuity(spec: Any, calls: list[ToolCall]) -> list[CheckOutcome]:
+def _check_state_continuity(
+    spec: Any, calls: list[ToolCall], trace: Trace
+) -> list[CheckOutcome]:
     check: StateContinuityCheck = spec
     if not check.producer or not check.consumer:
         return [
@@ -355,9 +409,43 @@ def _is_subsequence(expected: Sequence[str], observed: Sequence[str]) -> bool:
     return all(item in iterator for item in expected)
 
 
-_HANDLERS: dict[str, Callable[[Any, list[ToolCall]], list[CheckOutcome]]] = {
+def _check_budget(spec: Any, calls: list[ToolCall], trace: Trace) -> list[CheckOutcome]:
+    check: BudgetCheck = spec
+    limits = [
+        ("max_calls", check.max_calls, len(calls)),
+        ("max_retries", check.max_retries, count_repeated_calls(calls)),
+        ("max_duration_ms", check.max_duration_ms, trace_duration_ms(trace)),
+    ]
+    declared = [entry for entry in limits if entry[1] is not None]
+    if not declared:
+        return [
+            CheckOutcome(
+                name="budget.configured",
+                passed=False,
+                expected="at least one budget limit",
+                actual=None,
+                message="budget check declares no limits",
+            )
+        ]
+    outcomes: list[CheckOutcome] = []
+    for name, limit, actual in declared:
+        passed = actual <= limit  # type: ignore[operator]
+        outcomes.append(
+            CheckOutcome(
+                name=f"budget.{name}",
+                passed=passed,
+                expected=f"<= {limit}",
+                actual=actual,
+                message=None if passed else f"{name} {actual} exceeds the limit {limit}",
+            )
+        )
+    return outcomes
+
+
+_HANDLERS: dict[str, Callable[[Any, list[ToolCall], Trace], list[CheckOutcome]]] = {
     "tool_sequence": _check_tool_sequence,
     "no_extra_calls": _check_no_extra_calls,
     "recovery": _check_recovery,
     "state_continuity": _check_state_continuity,
+    "budget": _check_budget,
 }

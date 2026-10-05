@@ -21,7 +21,8 @@
         {
           "kind": "no_extra_calls",
           "allowed": ["echo_tool", "idempotent_tool", "payout_tool"]
-        }
+        },
+        { "kind": "budget", "max_calls": 5, "max_retries": 0 }
       ]
     },
     {

@@ -26,9 +26,11 @@ from agenteval.models import (
     Trace,
     Verdict,
 )
+from agenteval.metrics import summarize_metrics
 from agenteval.process import (
     TraceSession,
     extract_tool_calls,
+    measure_calls,
     process_handler,
     wrap_registry_for_trace,
 )
@@ -134,7 +136,7 @@ def evaluate_task_checks(
     for spec in task.checks:
         handler = process_handler(spec.kind)
         if handler is not None:
-            outcomes.extend(handler(spec, calls))
+            outcomes.extend(handler(spec, calls, trace))
         elif isinstance(spec, FinalStateCheck):
             outcomes.append(check_final_state(spec, registry))
         else:
@@ -219,6 +221,7 @@ class TaskRunner:
         status = Status.PASS if all(check.passed for check in checks) else Status.FAIL
         verdict = Verdict(case_id=task.id, status=status, checks=checks)
         verdict.duration_ms = round((time.perf_counter() - start) * 1000, 3)
+        verdict.metrics = measure_calls(trace)
         return verdict, trace
 
     def run(
@@ -240,6 +243,7 @@ class TaskRunner:
             run.verdicts.append(verdict)
             run.traces.append(trace)
         run.metadata["task_report"] = summarize_tasks(task_list, run.verdicts)
+        run.metadata["metrics"] = summarize_metrics(run.verdicts).model_dump(mode="json")
         run.finished_at = datetime.now(timezone.utc)
         run.refresh_summary()
         if self.store is not None:

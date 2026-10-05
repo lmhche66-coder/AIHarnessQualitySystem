@@ -337,6 +337,48 @@ python -m agenteval --home .agenteval run --cases candidates.json --demo
 
 归因需要原始用例定义，默认取运行元信息里记录的文件路径，也可以用 `--cases` 指定。
 
+## 指标与预算
+
+功能判据全绿不代表代价可控：一个用例可能通过，却调用了三十次工具、重试了十次。指标与预算把这类问题变成可判定的东西。
+
+```bash
+python -m agenteval --home .agenteval run --cases examples/process_cases.json --demo
+```
+
+```
+cases: 3  pass: 3  fail: 0  error: 0
+metrics: calls=7 retries=0 p50=0.999ms p95=2.004ms tokens=0/0 usage=not reported
+```
+
+每次运行都会产出调用总数、重复调用总数、耗时 p50/p95 与 token 汇总。重复调用按「相同目标工具 + 相同参数」统计，因为它正是成本随重试膨胀的形态。
+
+预算判据与顺序、恢复、终态判据并列，声明上限、超限即失败：
+
+```json
+{
+  "kind": "budget",
+  "max_calls": 5,
+  "max_retries": 0,
+  "max_duration_ms": 2000
+}
+```
+
+```
+[fail ] budget-probe  (3.5 ms)
+       - budget.max_retries: max_retries 2 exceeds the limit 1
+budget violations: budget-probe:budget.max_retries
+```
+
+三个取舍。指标全部从轨迹推导，不引入外部计时器，因此同一份轨迹重复求值得到同样的数字，指标本身也能参与回归比对。只声明部分上限时，未声明的指标不参与判定。token 用量依赖工具主动上报（`ToolResult.usage`），未上报时报告写 `usage=not reported`，而不是给出「零消耗」的结论——后者比没有数字更危险。
+
+预算失败就是普通的判据失败，所以门禁零改动即可覆盖非功能准入：
+
+```bash
+python -m agenteval --home .agenteval gate --min-pass-rate 1.0
+```
+
+两个口径需要说明：耗时取自轨迹首尾事件的时间差，衡量的是工具调用跨度，不含模型思考时间；分位数用最近秩法，运行记录里标注了所采用的口径。
+
 ## 在 pytest 里运行
 
 ```bash
@@ -367,6 +409,8 @@ def test_tool_contracts(tmp_path):
 - 运行目录与 cassette 会随运行次数增长，尚未提供清理与索引。
 - 本版本覆盖工具契约层、确定性回放、轨迹与过程断言、质量门禁与端到端任务成功率。LLM 裁判、可观测、性能与多端层均为后续变更。
 - 端到端任务只做单次执行统计，不做重复尝试与 pass@k；环境隔离靠工厂重建，尚未提供快照恢复。
+- token 用量依赖工具上报，覆盖不全时只汇总已上报部分；尚未做 token 预算与成本货币化换算。
+- 未提供吞吐与并发压测、显存与推理引擎 benchmark。
 
 ## 规格来源
 

@@ -26,7 +26,8 @@ from agenteval.models import (
     Trace,
     Verdict,
 )
-from agenteval.process import check_process_case, record_tool_call
+from agenteval.metrics import summarize_metrics
+from agenteval.process import check_process_case, measure_calls, record_tool_call
 from agenteval.store import RunStore
 from agenteval.tools import ToolErrorKind, ToolRegistry, ToolResult
 
@@ -118,6 +119,7 @@ class ContractRunner:
             if session is not None:
                 session.end_case()
         verdict.duration_ms = round((time.perf_counter() - start) * 1000, 3)
+        verdict.metrics = measure_calls(trace)
         return verdict, trace
 
     def _resolve_trace_override(self, case: AnyCase) -> tuple[Trace | None, str | None]:
@@ -276,6 +278,7 @@ class ContractRunner:
                         ],
                     )
                 )
+        run.metadata["metrics"] = summarize_metrics(run.verdicts).model_dump(mode="json")
         run.finished_at = datetime.now(timezone.utc)
         run.refresh_summary()
         if self.store is not None:

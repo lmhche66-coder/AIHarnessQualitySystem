@@ -13,6 +13,8 @@ from typing import Any, Protocol, runtime_checkable
 import jsonschema
 from pydantic import BaseModel, ConfigDict
 
+from agenteval.models import TokenUsage
+
 
 class ToolErrorKind(str, Enum):
     """结构化的工具错误类别。"""
@@ -52,6 +54,7 @@ class ToolResult(BaseModel):
     error_message: str | None = None
     error_field: str | None = None
     attempts: int = 1
+    usage: TokenUsage | None = None
 
 
 @runtime_checkable

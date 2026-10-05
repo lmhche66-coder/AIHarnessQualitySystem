@@ -470,6 +470,7 @@ def _print_task_run(run: Run, report: dict[str, Any]) -> None:
         f"tasks: {report.get('total', 0)}  resolved: {report.get('resolved', 0)}  "
         f"resolved_rate: {report.get('resolved_rate', 0.0):.4f}"
     )
+    _print_metrics(run.metadata)
     for verdict in run.verdicts:
         print(f"  [{verdict.status.value:<5}] {verdict.case_id}  ({verdict.duration_ms:.1f} ms)")
         for check in verdict.failed_checks:
@@ -555,6 +556,7 @@ def _print_run(run: Run) -> None:
             f"cassette: {cassette.get('name')}  mode: {cassette.get('mode')}  "
             f"interactions: {cassette.get('interactions')}  unused: {len(unused)}"
         )
+    _print_metrics(run.metadata)
     for verdict in run.verdicts:
         print(f"  [{verdict.status.value:<5}] {verdict.case_id}  ({verdict.duration_ms:.1f} ms)")
         for check in verdict.failed_checks:
@@ -562,6 +564,25 @@ def _print_run(run: Run) -> None:
             print(f"         - {check.name}: {detail}")
         if verdict.error:
             print(f"         - error: {verdict.error}")
+
+
+def _print_metrics(metadata: dict[str, Any]) -> None:
+    """打印运行级指标；用量的覆盖情况必须如实标注，不给出零消耗的结论。"""
+
+    metrics = metadata.get("metrics")
+    if not isinstance(metrics, dict):
+        return
+    usage = "reported" if metrics.get("usage_reported") else "not reported"
+    print(
+        f"metrics: calls={metrics.get('calls', 0)} retries={metrics.get('retries', 0)} "
+        f"p50={metrics.get('duration_p50_ms', 0.0)}ms "
+        f"p95={metrics.get('duration_p95_ms', 0.0)}ms "
+        f"tokens={metrics.get('input_tokens', 0)}/{metrics.get('output_tokens', 0)} "
+        f"usage={usage}"
+    )
+    violations = metrics.get("budget_violations") or []
+    if violations:
+        print(f"budget violations: {', '.join(violations)}")
 
 
 def load_registry(ref: str | None) -> ToolRegistry:

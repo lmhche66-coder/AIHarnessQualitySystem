@@ -25,6 +25,7 @@ from agenteval.models import (
     Verdict,
     WrongTypeCheck,
 )
+from agenteval.process import record_tool_call
 from agenteval.tools import Tool, ToolErrorKind, ToolResult
 
 
@@ -69,7 +70,7 @@ def _check_missing_required(case: Case, tool: Tool, trace: Trace) -> list[CheckO
     for name in spec.drop:
         args.pop(name, None)
     trace.record("invoke_missing_required", payload={"args": args, "dropped": list(spec.drop)})
-    invocation = _invoke(tool, args)
+    invocation = _invoke(tool, args, trace=trace)
     return [
         _expect_structured_error(
             invocation,
@@ -95,7 +96,7 @@ def _check_wrong_type(case: Case, tool: Tool, trace: Trace) -> list[CheckOutcome
     args = dict(case.input)
     args.update(spec.overrides)
     trace.record("invoke_wrong_type", payload={"args": args, "overrides": dict(spec.overrides)})
-    invocation = _invoke(tool, args)
+    invocation = _invoke(tool, args, trace=trace)
     return [
         _expect_structured_error(
             invocation,
@@ -108,7 +109,7 @@ def _check_wrong_type(case: Case, tool: Tool, trace: Trace) -> list[CheckOutcome
 
 def _check_timeout(case: Case, tool: Tool, trace: Trace) -> list[CheckOutcome]:
     spec: TimeoutCheck = case.check  # type: ignore[assignment]
-    invocation = _invoke(tool, dict(case.input), timeout_s=spec.timeout_s)
+    invocation = _invoke(tool, dict(case.input), timeout_s=spec.timeout_s, trace=trace)
     elapsed_s = invocation.duration_ms / 1000
     trace.record(
         "invoke_timeout",
@@ -142,7 +143,7 @@ def _check_rate_limit(case: Case, tool: Tool, trace: Trace) -> list[CheckOutcome
     failure: Exception | None = None
     for attempt in range(1, spec.max_attempts + 1):
         attempts = attempt
-        invocation = _invoke(tool, dict(case.input))
+        invocation = _invoke(tool, dict(case.input), trace=trace)
         if invocation.exception is not None:
             failure = invocation.exception
             break
@@ -195,7 +196,7 @@ def _check_idempotent(case: Case, tool: Tool, trace: Trace) -> list[CheckOutcome
     args["idempotency_key"] = spec.idempotency_key
     results: list[ToolResult] = []
     for _ in range(spec.repeat):
-        invocation = _invoke(tool, args)
+        invocation = _invoke(tool, args, trace=trace)
         if invocation.exception is not None:
             return [
                 CheckOutcome(
@@ -263,7 +264,7 @@ def _check_rollback(case: Case, tool: Tool, trace: Trace) -> list[CheckOutcome]:
     args = dict(case.input)
     args["steps"] = list(spec.steps)
     args["fail_at"] = spec.fail_at
-    invocation = _invoke(tool, args)
+    invocation = _invoke(tool, args, trace=trace)
     trace.record("invoke_rollback", payload={"steps": list(spec.steps), "fail_at": spec.fail_at})
     if invocation.exception is not None:
         return [
@@ -358,7 +359,12 @@ def _expect_structured_error(
     )
 
 
-def _invoke(tool: Tool, args: dict[str, Any], timeout_s: float | None = None) -> Invocation:
+def _invoke(
+    tool: Tool,
+    args: dict[str, Any],
+    timeout_s: float | None = None,
+    trace: Trace | None = None,
+) -> Invocation:
     """调用工具并把异常、超时统一转换为观察结果。"""
 
     start = time.perf_counter()
@@ -367,6 +373,8 @@ def _invoke(tool: Tool, args: dict[str, Any], timeout_s: float | None = None) ->
             result = tool.invoke(**args)
         except Exception as exc:  # noqa: BLE001 - 任意异常都要转成判定结果
             return Invocation(exception=exc, duration_ms=_elapsed_ms(start))
+        if trace is not None:
+            record_tool_call(trace, tool.name, args, result)
         return Invocation(result=result, duration_ms=_elapsed_ms(start))
 
     executor = ThreadPoolExecutor(max_workers=1)
@@ -383,6 +391,8 @@ def _invoke(tool: Tool, args: dict[str, Any], timeout_s: float | None = None) ->
     except Exception as exc:  # noqa: BLE001 - 任意异常都要转成判定结果
         return Invocation(exception=exc, duration_ms=_elapsed_ms(start))
     else:
+        if trace is not None:
+            record_tool_call(trace, tool.name, args, result)
         return Invocation(result=result, duration_ms=_elapsed_ms(start))
     finally:
         executor.shutdown(wait=False, cancel_futures=True)

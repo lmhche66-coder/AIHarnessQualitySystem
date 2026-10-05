@@ -140,12 +140,22 @@ class StateContinuityCheck(ProcessCheck):
     producer_field: str | None = None
 
 
+class BudgetCheck(ProcessCheck):
+    """对非功能代价设定上限：调用次数、重复调用次数与耗时。"""
+
+    kind: Literal["budget"] = "budget"
+    max_calls: int | None = Field(default=None, ge=0)
+    max_retries: int | None = Field(default=None, ge=0)
+    max_duration_ms: float | None = Field(default=None, ge=0)
+
+
 ProcessCheckSpec = Annotated[
     Union[
         ToolSequenceCheck,
         NoExtraCallsCheck,
         RecoveryCheck,
         StateContinuityCheck,
+        BudgetCheck,
     ],
     Field(discriminator="kind"),
 ]
@@ -190,6 +200,7 @@ TaskCheckSpec = Annotated[
         NoExtraCallsCheck,
         RecoveryCheck,
         StateContinuityCheck,
+        BudgetCheck,
         FinalStateCheck,
     ],
     Field(discriminator="kind"),
@@ -224,6 +235,28 @@ class CheckOutcome(BaseModel):
     message: str | None = None
 
 
+class TokenUsage(BaseModel):
+    """工具上报的 token 用量。未上报时保持为空，不臆造数字。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+
+
+class CaseMetrics(BaseModel):
+    """单条用例的运行指标。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    calls: int = 0
+    retries: int = 0
+    duration_ms: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    usage_reported: bool = False
+
+
 class Verdict(BaseModel):
     """一条用例的判定结果。"""
 
@@ -234,6 +267,7 @@ class Verdict(BaseModel):
     checks: list[CheckOutcome] = Field(default_factory=list)
     error: str | None = None
     duration_ms: float = 0.0
+    metrics: CaseMetrics = Field(default_factory=CaseMetrics)
 
     @property
     def failed_checks(self) -> list[CheckOutcome]:
