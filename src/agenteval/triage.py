@@ -102,11 +102,12 @@ def build_candidate(
     case: AnyCase,
     source_run: str,
     trace_name: str,
+    suffix: str = "",
 ) -> ProcessCase:
     """生成绑定证据轨迹的候选用例，判据沿用原用例中依赖轨迹的部分。"""
 
     return ProcessCase(
-        id=f"{case.id}{REPRO_SUFFIX}",
+        id=f"{case.id}{REPRO_SUFFIX}{suffix}",
         description=f"Regression reproduction of {case.id} from run {source_run}",
         trace=trace_name,
         checks=list(trace_checks(case)),

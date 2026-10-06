@@ -64,6 +64,12 @@ from agenteval.bridge import (
     parse_direct_reference,
 )
 from agenteval.mcp import McpRunner, load_mcp_cases
+from agenteval.reflow import (
+    REFLOW_DIRNAME,
+    default_paths as reflow_default_paths,
+    format_report as format_reflow_report,
+    reflow as run_incremental_reflow,
+)
 from agenteval.sandbox import (
     DockerSandbox,
     SandboxError,
@@ -349,6 +355,23 @@ def build_parser() -> argparse.ArgumentParser:
         sandbox_sub.add_argument("--json", action="store_true", help="emit JSON instead of text")
     sandbox_down.add_argument("--volumes", action="store_true", help="also remove data volumes")
     sandbox_snapshot.add_argument("--name", help="snapshot name")
+
+    reflow_parser = subparsers.add_parser(
+        "reflow", help="turn newly seen failures into a regression dataset"
+    )
+    reflow_subparsers = reflow_parser.add_subparsers(dest="reflow_command", required=True)
+    reflow_run_parser = reflow_subparsers.add_parser(
+        "run", help="scan stored runs and emit new regression cases"
+    )
+    reflow_run_parser.add_argument(
+        "--dataset", type=Path, help="dataset path (default: <home>/reflow/regression_cases.json)"
+    )
+    reflow_run_parser.add_argument(
+        "--trace-prefix",
+        default=DEFAULT_TRACE_PREFIX,
+        help="prefix for saved evidence traces (default: repro)",
+    )
+    reflow_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -391,6 +414,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_selection(args, store)
     if args.command == "sandbox":
         return _cmd_sandbox(args, store)
+    if args.command == "reflow":
+        return _cmd_reflow(args, store)
     return 2
 
 
@@ -1332,6 +1357,27 @@ def _print_sandbox_payload(payload: dict[str, Any], as_json: bool) -> None:
         return
     for key, value in payload.items():
         print(f"{key}: {value}")
+
+
+def _cmd_reflow(args: argparse.Namespace, store: RunStore) -> int:
+    if args.reflow_command != "run":
+        return 2
+    default_dataset, default_ledger = reflow_default_paths(
+        store.runs_dir.parent / REFLOW_DIRNAME
+    )
+    dataset = args.dataset or default_dataset
+    report = run_incremental_reflow(
+        store,
+        _trace_store_from_args(args),
+        dataset,
+        default_ledger,
+        trace_prefix=args.trace_prefix,
+    )
+    if args.json:
+        print(json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2))
+    else:
+        print(format_reflow_report(report))
+    return 0
 
 
 def _print_load(run: Run, reports: list[Any]) -> None:
