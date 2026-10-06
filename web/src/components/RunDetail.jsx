@@ -16,7 +16,7 @@ function Stat({ value, label, tone = "" }) {
   );
 }
 
-export default function RunDetail({ run, onCaptureBaseline }) {
+export default function RunDetail({ run }) {
   if (!run) return <div className="empty">从左侧选择一次运行</div>;
   const summary = run.summary || {};
   const metadata = run.metadata || {};
@@ -25,14 +25,6 @@ export default function RunDetail({ run, onCaptureBaseline }) {
       <div className="detail-head">
         <span className="detail-title">{run.run_id}</span>
         <span className="dim">{timestamp(run.started_at)}</span>
-        <span className="spacer" />
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => onCaptureBaseline(run.run_id)}
-        >
-          设为基线
-        </button>
       </div>
       <div className="stats">
         <Stat value={summary.total || 0} label="用例" />

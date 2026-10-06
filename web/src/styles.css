@@ -143,6 +143,10 @@ button { font: inherit; color: inherit; }
 }
 .block-title { font-size: 12px; font-weight: 600; color: var(--dim); margin: 0 0 8px; }
 .sub + .sub { margin-top: 12px; border-top: 1px solid #eef1f5; padding-top: 10px; }
+
+/* 资产分区：三块只读清单上下排列，避免嵌套标签页带来的层级混乱 */
+.assets { display: flex; flex-direction: column; gap: 14px; }
+.assets .block { margin-bottom: 0; }
 .scenario { font-family: var(--mono); font-size: 12px; margin-bottom: 6px; }
 .scenario.pass { color: var(--ok); }
 .scenario.fail { color: var(--warn); }

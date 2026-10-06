@@ -13,7 +13,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-VIEWS = ["运行", "结论", "基线", "标注", "回流", "导入"]
+VIEWS = ["运行", "结论", "基线", "资产"]
 VIEWPORTS = {
     "desktop": {"width": 1440, "height": 900},
     "mobile": {"width": 390, "height": 844},

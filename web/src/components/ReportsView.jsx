@@ -60,61 +60,18 @@ function Summary({ record }) {
   return <JudgeSummary summary={record.summary || {}} />;
 }
 
-export default function ReportsView({ reports, runs, onGate, busy }) {
+export default function ReportsView({ reports }) {
   const [selectedId, setSelectedId] = useState(null);
-  const [runId, setRunId] = useState("");
-  const [baseline, setBaseline] = useState("");
-
-  const gateForm = (
-    <form
-      className="inline-form"
-      onSubmit={async (event) => {
-        event.preventDefault();
-        const target = runId || (runs[0] && runs[0].run_id);
-        if (target) await onGate(target, baseline.trim());
-      }}
-    >
-      <label>
-        <span className="dim small">运行</span>
-        <select value={runId} onChange={(event) => setRunId(event.target.value)}>
-          <option value="">（最新一次）</option>
-          {runs.map((run) => (
-            <option key={run.run_id} value={run.run_id}>
-              {run.run_id}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label>
-        <span className="dim small">基线（可选）</span>
-        <input
-          type="text"
-          value={baseline}
-          placeholder="留空则只按阈值判定"
-          onChange={(event) => setBaseline(event.target.value)}
-        />
-      </label>
-      <button type="submit" className="primary" disabled={busy || runs.length === 0}>
-        {busy ? "判定中…" : "运行门禁"}
-      </button>
-    </form>
-  );
-
   if (reports.length === 0) {
     return (
-      <div>
-        {gateForm}
-        <div className="empty">
-          还没有结论记录。运行门禁，或在命令行执行 triage 与 judge calibrate 后会出现。
-        </div>
+      <div className="empty">
+        还没有结论记录。执行门禁、失败归因或裁判校准后会出现。
       </div>
     );
   }
   const selected = reports.find((record) => record.id === selectedId) || reports[0];
   return (
-    <div>
-      {gateForm}
-      <div className="split">
+    <div className="split">
       <ul className="run-list">
         {reports.map((record) => (
           <li key={record.id}>
@@ -151,6 +108,5 @@ export default function ReportsView({ reports, runs, onGate, busy }) {
         </section>
       </div>
       </div>
-    </div>
   );
 }

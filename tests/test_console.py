@@ -84,6 +84,37 @@ def fetch(url: str, method: str = "GET", body: dict | None = None) -> tuple[int,
         return error.code, error.read()
 
 
+def test_reflow_endpoint_reports_dataset_and_ledger(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    reflow_dir = tmp_path / "reflow"
+    reflow_dir.mkdir(parents=True)
+    (reflow_dir / "regression_cases.json").write_text(
+        json.dumps({"cases": [{"id": "case@repro-1", "kind": "process", "checks": []}]}),
+        encoding="utf-8",
+    )
+    (reflow_dir / "ledger.json").write_text(
+        json.dumps({"processed": {"abc": "2026-01-01T00:00:00Z"}}),
+        encoding="utf-8",
+    )
+    with running_console(store) as base:
+        status, body = fetch(f"{base}/api/reflow")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["counts"] == {"cases": 1, "processed": 1}
+    assert payload["dataset"]["cases"][0]["id"] == "case@repro-1"
+    assert payload["ledger"]["processed"] == {"abc": "2026-01-01T00:00:00Z"}
+
+
+def test_reflow_endpoint_is_empty_without_a_dataset(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "runs")
+    with running_console(store) as base:
+        status, body = fetch(f"{base}/api/reflow")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["counts"] == {"cases": 0, "processed": 0}
+    assert payload["dataset"]["cases"] == []
+
+
 def test_run_list_is_sorted_newest_first(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "runs")
     store.save(make_run("older", "2026-01-01T00:00:00Z"))

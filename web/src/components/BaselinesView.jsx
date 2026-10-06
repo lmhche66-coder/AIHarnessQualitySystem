@@ -1,51 +1,11 @@
-import { useState } from "react";
-
 import { timestamp } from "../format.js";
 import { Kv } from "./blocks.jsx";
 
-export default function BaselinesView({ baselines, runs, onCapture, busy, error }) {
-  const [runId, setRunId] = useState("");
-  const [name, setName] = useState("default");
-
-  async function submit(event) {
-    event.preventDefault();
-    const target = runId || (runs[0] && runs[0].run_id) || "";
-    if (!target) return;
-    const ok = await onCapture(target, name || "default");
-    if (ok) setName("default");
-  }
-
+export default function BaselinesView({ baselines }) {
   return (
     <div className="pane">
-      <form className="inline-form" onSubmit={submit}>
-        <label>
-          <span className="dim small">运行</span>
-          <select value={runId} onChange={(event) => setRunId(event.target.value)}>
-            <option value="">（最新一次）</option>
-            {runs.map((run) => (
-              <option key={run.run_id} value={run.run_id}>
-                {run.run_id}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span className="dim small">基线名</span>
-          <input
-            type="text"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="default"
-          />
-        </label>
-        <button type="submit" className="primary" disabled={busy || runs.length === 0}>
-          {busy ? "写入中…" : "捕获为基线"}
-        </button>
-        {error && <span className="bad small">{error}</span>}
-      </form>
-
       {baselines.length === 0 ? (
-        <div className="empty">还没有基线</div>
+        <div className="empty">还没有基线。用 agenteval baseline 捕获一次运行作为基线。</div>
       ) : (
         <table className="cases">
           <thead>

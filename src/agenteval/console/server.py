@@ -10,12 +10,14 @@ import json
 from collections.abc import Mapping
 from importlib import resources
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 from agenteval.console.actions import ConsoleServices, OperationError
 from agenteval.gate import Baseline, BaselineStore
 from agenteval.models import Run
+from agenteval.reflow import DATASET_FILENAME, LEDGER_FILENAME, REFLOW_DIRNAME
 from agenteval.store import SUMMARY_FILENAME, RunStore
 
 DEFAULT_HOST = "127.0.0.1"
@@ -177,6 +179,36 @@ def trace_listing(services: ConsoleServices) -> list[dict[str, Any]]:
     return entries
 
 
+def reflow_payload(home: Path) -> dict[str, Any]:
+    """回流数据集与水位，供控制台只读展示。"""
+
+    base = Path(home) / REFLOW_DIRNAME
+    cases: list[Any] = []
+    processed: dict[str, Any] = {}
+    dataset_path = base / DATASET_FILENAME
+    if dataset_path.exists():
+        try:
+            payload = json.loads(dataset_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = {}
+        raw = payload.get("cases") if isinstance(payload, dict) else payload
+        if isinstance(raw, list):
+            cases = raw
+    ledger_path = base / LEDGER_FILENAME
+    if ledger_path.exists():
+        try:
+            ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            ledger = {}
+        if isinstance(ledger, dict) and isinstance(ledger.get("processed"), dict):
+            processed = ledger["processed"]
+    return {
+        "dataset": {"cases": cases},
+        "ledger": {"processed": processed},
+        "counts": {"cases": len(cases), "processed": len(processed)},
+    }
+
+
 def create_handler(services: ConsoleServices) -> type[BaseHTTPRequestHandler]:
     """构造绑定到指定存储的请求处理器，便于测试直接注入临时目录。"""
 
@@ -271,6 +303,9 @@ def create_handler(services: ConsoleServices) -> type[BaseHTTPRequestHandler]:
                     return
                 if parts == ["api", "traces"]:
                     self._send_json({"traces": trace_listing(services)})
+                    return
+                if parts == ["api", "reflow"]:
+                    self._send_json(reflow_payload(store.runs_dir.parent))
                     return
                 if parts == ["api", "cases"]:
                     self._send_json({"cases": services.list_cases_files()})

@@ -2,17 +2,17 @@
   "flows": [
     {
       "id": "console-tabs-render",
-      "name": "控制台六个标签都能渲染",
+      "name": "控制台四个只读分区都能渲染",
       "base_url": "http://127.0.0.1:8000",
       "steps": [
         { "action": "goto", "target": "/" },
         { "action": "click", "target": "text=\"结论\"" },
-        { "action": "click", "target": "text=\"标注\"" }
+        { "action": "click", "target": "text=\"资产\"" }
       ],
       "expect": [
-        { "kind": "count", "target": "nav.tabs button", "expected": 6 },
+        { "kind": "count", "target": "nav.tabs button", "expected": 4 },
         { "kind": "visible", "target": "main" },
-        { "kind": "text", "target": "nav.tabs", "expected": "回流" }
+        { "kind": "text", "target": "nav.tabs", "expected": "资产" }
       ],
       "max_steps": 5,
       "max_duration_ms": 20000
