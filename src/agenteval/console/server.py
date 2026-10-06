@@ -195,6 +195,7 @@ def create_handler(services: ConsoleServices) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             if not allow_actions:
+                self._drain_body()
                 self._send_json(
                     {
                         "error": (
@@ -293,6 +294,7 @@ def create_handler(services: ConsoleServices) -> type[BaseHTTPRequestHandler]:
             parts = [unquote(part) for part in path.strip("/").split("/") if part]
             handler = self._action_handler(parts)
             if handler is None:
+                self._drain_body()
                 self._send_json({"error": "method not allowed"}, status=405)
                 return
             body = self._read_json_body()
@@ -377,6 +379,17 @@ def create_handler(services: ConsoleServices) -> type[BaseHTTPRequestHandler]:
                 self._send_json({"error": "request body must be a JSON object"}, status=400)
                 return None
             return dict(payload)
+
+        def _drain_body(self) -> None:
+            """拒绝请求前先把请求体读掉，否则客户端写完之前连接就会被重置。"""
+
+            length = int(self.headers.get("Content-Length") or 0)
+            if length <= 0:
+                return
+            if length > HARD_BODY_BYTES:
+                self.close_connection = True
+                return
+            self.rfile.read(length)
 
         def _send_bytes(self, body: bytes, content_type: str, status: int = 200) -> None:
             self.send_response(status)

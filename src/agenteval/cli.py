@@ -54,6 +54,7 @@ from agenteval.reports import (
     write_conclusion,
 )
 from agenteval.reports import REPORTS_DIRNAME
+from agenteval.otel import ExportError, export_run
 from agenteval.models import Run
 from agenteval.models import AnyCase
 from agenteval.runner import ContractRunner, load_cases
@@ -244,6 +245,17 @@ def build_parser() -> argparse.ArgumentParser:
     ui_run_parser.add_argument("--driver", default="playwright", help="driver name (default: playwright)")
     ui_run_parser.add_argument("--headed", action="store_true", help="show the browser window")
     ui_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    otel_parser = subparsers.add_parser("otel", help="export runs as OTLP traces")
+    otel_subparsers = otel_parser.add_subparsers(dest="otel_command", required=True)
+    otel_export_parser = otel_subparsers.add_parser(
+        "export", help="export a run to an OTLP/HTTP endpoint"
+    )
+    otel_export_parser.add_argument("--run", dest="run_id", help="run id (default: latest)")
+    otel_export_parser.add_argument(
+        "--endpoint", required=True, help="OTLP/HTTP traces endpoint, e.g. http://host:4318/v1/traces"
+    )
+    otel_export_parser.add_argument("--json", action="store_true", help="print the OTLP payload")
     return parser
 
 
@@ -274,6 +286,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_load(args, store)
     if args.command == "ui":
         return _cmd_ui(args, store)
+    if args.command == "otel":
+        return _cmd_otel(args, store)
     return 2
 
 
@@ -856,6 +870,30 @@ def _cmd_ui(args: argparse.Namespace, store: RunStore) -> int:
             if artifact.get("screenshot"):
                 print(f"  screenshot: {artifact['screenshot']}")
     return 1 if run.summary.failed or run.summary.errored else 0
+
+
+def _cmd_otel(args: argparse.Namespace, store: RunStore) -> int:
+    if args.otel_command != "export":
+        return 2
+    run_id = args.run_id or _latest_run_id(store)
+    if run_id is None:
+        print("no runs recorded", file=sys.stderr)
+        return 2
+    try:
+        run = store.load(run_id)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        result = export_run(run, args.endpoint)
+    except ExportError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result.payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"exported {result.spans} spans from run {run_id} to {result.endpoint}")
+    return 0
 
 
 def _print_load(run: Run, reports: list[Any]) -> None:

@@ -595,6 +595,41 @@ playwright install chromium
 
 未安装时驱动会给出明确提示，其余功能不受影响。失败截图落在 `<home>/ui/`。
 
+## 轨迹导出（OTLP）
+
+轨迹落成本地文件后只能在本平台里看。导出把它们推给团队已有的 trace 后端：
+
+```bash
+python -m agenteval --home .agenteval otel export \
+  --run <run_id> \
+  --endpoint http://127.0.0.1:4318/v1/traces
+```
+
+```
+exported 7 spans from run 20261006T020654Z-d1dbc989 to http://127.0.0.1:4318/v1/traces
+```
+
+仓库里带了一个最小接收端，可以本地确认导出内容：
+
+```bash
+python tools/otlp_receiver.py 4318
+```
+
+```
+[/v1/traces] received
+  agenteval.run                           trace=5c5b4aa6 span=e0937c03 parent=-        status=1
+  agenteval.case task-charge-and-settle   trace=5c5b4aa6 span=48fb2240 parent=e0937c03 status=1
+  execute_tool ledger_tool                trace=5c5b4aa6 span=b23e5c59 parent=48fb2240 status=1
+```
+
+三个设计：
+
+- **语义约定优先**。工具调用用 `execute_tool` 操作名与 `gen_ai.tool.name`，token 用量用 `gen_ai.usage.input_tokens` 与 `output_tokens`；平台自有字段（判定状态、错误类别、重试次数、调用参数）放 `agenteval.*`，不占用保留命名空间。
+- **标识确定性生成**。trace 与 span 标识由运行标识、用例标识与序号派生，同一份运行重复导出得到完全相同的标识，后端可以据此去重。
+- **只做 OTLP/HTTP JSON**。标准库即可实现，零依赖、可读、便于测试。gRPC 需要 protobuf 与传输库，对「把轨迹送出去」这件事收益不成比例。
+
+导出是只读的：它不写入、不移动、不删除任何本地产物。
+
 ## Web 控制台
 
 ### 四项操作能力
@@ -685,6 +720,7 @@ def test_tool_contracts(tmp_path):
 - 裁判校准只覆盖成对偏好型裁判；逐点评分型没有「位置」概念，偏置检测不适用。
 - 压测为单机线程模型，不做分布式施压；极大并发需要改用外部压测器并把结论导入。
 - UI 检查只覆盖 Web，未实现移动端驱动；未做视觉回归与像素比对。
+- 轨迹导出只做 OTLP/HTTP JSON，不做 gRPC、批量与重试队列；日志与指标不导出。
 
 ## 规格来源
 
