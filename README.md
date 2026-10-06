@@ -548,6 +548,53 @@ python -m agenteval --home .agenteval load run \
 
 **工具选型。** k6 与 Locust 都是通用 HTTP 压测器，它们不懂 token、不懂工具扇出、也不懂任务解决率。真实做法是两层：通用压测器负责大规模施压，应用侧导出指标做关联。这个模块覆盖的是另一件事——把压测结论并进与其它各层同一份运行记录，因此控制台和门禁不需要为压测新增代码路径。需要更大规模时换 k6，结论照样能导进来。
 
+## 多端 UI 检查
+
+前面七层验证的是「agent 做对没有」。但产出最终要通过真实端交付给人看——按钮点不动、文案溢出、加载态不消失，这些在接口层全是绿的。这层和 agent 质量解耦，单独一层。
+
+```bash
+python -m agenteval --home .agenteval ui run --flows examples/ui_flows.json
+```
+
+```
+run_id: 20261006T014629Z-377975ec
+flows: 1  pass: 1  fail: 0  error: 0
+  [pass ] console-tabs-render  (1547 ms)
+```
+
+流程是声明式的：一串步骤（打开、点击、填写、等待）加一组断言（元素可见、文本、计数、当前地址）。
+
+```json
+{
+  "id": "console-tabs-render",
+  "base_url": "http://127.0.0.1:8000",
+  "steps": [
+    { "action": "goto", "target": "/" },
+    { "action": "click", "target": "text=\"结论\"" }
+  ],
+  "expect": [
+    { "kind": "count", "target": "nav.tabs button", "expected": 6 },
+    { "kind": "visible", "target": "main" }
+  ],
+  "max_duration_ms": 20000
+}
+```
+
+三个设计：
+
+- **流程与驱动解耦**。脚本驱动在单元测试里精确模拟页面状态（快且确定），Playwright 驱动做端到端确认。引擎逻辑不靠浏览器验证，浏览器只验证真实交互。
+- **只在失败时截图**。截图是定位失败的证据，不是每次都需要的产物；通过时不截，避免产物随运行次数线性增长，截图本身失败也不影响判定结论。
+- **步骤异常与断言不满足分开**。步骤抛异常（选择器错、页面没加载）记 error，断言不满足记 fail。前者是脚本问题，后者是页面问题，排查方向不同。
+
+Playwright 是可选依赖，不进入默认安装：
+
+```bash
+python -m pip install "agenteval[ui]"
+playwright install chromium
+```
+
+未安装时驱动会给出明确提示，其余功能不受影响。失败截图落在 `<home>/ui/`。
+
 ## Web 控制台
 
 ### 四项操作能力
@@ -635,6 +682,7 @@ def test_tool_contracts(tmp_path):
 - 审计导入只覆盖工具调用边界；状态传递判据要求源数据保留原始返回值，仅有结果摘要时无法评估。
 - 裁判校准只覆盖成对偏好型裁判；逐点评分型没有「位置」概念，偏置检测不适用。
 - 压测为单机线程模型，不做分布式施压；极大并发需要改用外部压测器并把结论导入。
+- UI 检查只覆盖 Web，未实现移动端驱动；未做视觉回归与像素比对。
 
 ## 规格来源
 

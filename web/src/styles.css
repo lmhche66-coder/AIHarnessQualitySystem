@@ -75,6 +75,8 @@ button { font: inherit; color: inherit; }
 .sidebar, .detail { background: var(--bg); overflow: auto; }
 .sidebar { padding: 14px 12px; }
 .detail { padding: 16px 20px 40px; }
+/* 只渲染一个面板的视图必须跨满两列，否则会落进 320px 的侧栏列 */
+.detail.full { grid-column: 1 / -1; }
 
 .section-title {
   font-size: 11px;
@@ -229,6 +231,8 @@ button { font: inherit; color: inherit; }
 @media (max-width: 900px) {
   .layout, .split { grid-template-columns: 1fr; }
   .sidebar { max-height: 40vh; border-bottom: 1px solid var(--line); }
+  .topbar { flex-wrap: wrap; height: auto; min-height: 52px; padding: 8px 12px; row-gap: 6px; }
+  .tabs { flex-wrap: wrap; margin-left: 0; }
 }
 
 .side-form {

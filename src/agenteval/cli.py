@@ -67,6 +67,7 @@ from agenteval.triage import (
     triage_run,
     write_candidates,
 )
+from agenteval.ui import UiRunner, build_driver_factory, load_flows
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -234,6 +235,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--base-url", help="override the base address of scenario targets"
     )
     load_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    ui_parser = subparsers.add_parser("ui", help="run declarative UI flows in a browser")
+    ui_subparsers = ui_parser.add_subparsers(dest="ui_command", required=True)
+    ui_run_parser = ui_subparsers.add_parser("run", help="execute UI flows")
+    ui_run_parser.add_argument("--flows", type=Path, required=True, help="flow file (JSON or YAML)")
+    ui_run_parser.add_argument("--base-url", help="override the base address of every flow")
+    ui_run_parser.add_argument("--driver", default="playwright", help="driver name (default: playwright)")
+    ui_run_parser.add_argument("--headed", action="store_true", help="show the browser window")
+    ui_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -262,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_serve(args, store)
     if args.command == "load":
         return _cmd_load(args, store)
+    if args.command == "ui":
+        return _cmd_ui(args, store)
     return 2
 
 
@@ -798,6 +810,51 @@ def _cmd_load(args: argparse.Namespace, store: RunStore) -> int:
         print(json.dumps(reports, ensure_ascii=False, indent=2))
     else:
         _print_load(run, reports)
+    return 1 if run.summary.failed or run.summary.errored else 0
+
+
+def _cmd_ui(args: argparse.Namespace, store: RunStore) -> int:
+    if args.ui_command != "run":
+        return 2
+    try:
+        flows = load_flows(args.flows)
+    except FileNotFoundError:
+        print(f"flow file not found: {args.flows}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.base_url:
+        flows = [flow.model_copy(update={"base_url": args.base_url}) for flow in flows]
+    try:
+        factory = build_driver_factory(args.driver, headless=not args.headed)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    runner = UiRunner(
+        driver_factory=factory,
+        store=store,
+        artifacts_dir=store.runs_dir.parent / "ui",
+    )
+    run = runner.run(flows, metadata={"flows_file": str(args.flows), "driver": args.driver})
+    if args.json:
+        print(json.dumps(run.metadata.get("ui_artifacts") or [], ensure_ascii=False, indent=2))
+    else:
+        print(f"run_id: {run.run_id}")
+        print(
+            f"flows: {run.summary.total}  pass: {run.summary.passed}  "
+            f"fail: {run.summary.failed}  error: {run.summary.errored}"
+        )
+        for verdict in run.verdicts:
+            print(f"  [{verdict.status.value:<5}] {verdict.case_id}  ({verdict.duration_ms:.0f} ms)")
+            for check in verdict.failed_checks:
+                print(f"         - {check.name}: {check.message or 'check failed'}")
+            if verdict.error:
+                print(f"         - error: {verdict.error}")
+        for artifact in run.metadata.get("ui_artifacts") or []:
+            if artifact.get("screenshot"):
+                print(f"  screenshot: {artifact['screenshot']}")
     return 1 if run.summary.failed or run.summary.errored else 0
 
 

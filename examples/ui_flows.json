@@ -1,0 +1,21 @@
+{
+  "flows": [
+    {
+      "id": "console-tabs-render",
+      "name": "控制台六个标签都能渲染",
+      "base_url": "http://127.0.0.1:8000",
+      "steps": [
+        { "action": "goto", "target": "/" },
+        { "action": "click", "target": "text=\"结论\"" },
+        { "action": "click", "target": "text=\"标注\"" }
+      ],
+      "expect": [
+        { "kind": "count", "target": "nav.tabs button", "expected": 6 },
+        { "kind": "visible", "target": "main" },
+        { "kind": "text", "target": "nav.tabs", "expected": "回流" }
+      ],
+      "max_steps": 5,
+      "max_duration_ms": 20000
+    }
+  ]
+}

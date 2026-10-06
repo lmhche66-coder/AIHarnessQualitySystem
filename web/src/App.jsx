@@ -157,12 +157,12 @@ export default function App() {
           </>
         )}
         {view === "reports" && (
-          <section className="detail">
+          <section className="detail full">
             <ReportsView reports={reports} />
           </section>
         )}
         {view === "baselines" && (
-          <section className="detail">
+          <section className="detail full">
             <BaselinesView
               baselines={baselines}
               runs={runs}
@@ -173,17 +173,17 @@ export default function App() {
           </section>
         )}
         {view === "labeling" && (
-          <section className="detail">
+          <section className="detail full">
             <LabelingView sets={goldSets} onChanged={refresh} notify={notify} />
           </section>
         )}
         {view === "reflow" && (
-          <section className="detail">
+          <section className="detail full">
             <ReflowView runs={runs} onChanged={refresh} notify={notify} />
           </section>
         )}
         {view === "import" && (
-          <section className="detail">
+          <section className="detail full">
             <ImportView traces={traces} onChanged={refresh} notify={notify} />
           </section>
         )}
