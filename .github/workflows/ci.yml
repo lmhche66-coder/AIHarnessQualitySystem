@@ -136,6 +136,19 @@ jobs:
             --scenarios examples/load_scenarios.json \
             --base-url http://127.0.0.1:8799
 
+      - name: Probe an agent for security failures
+        run: |
+          # 有漏洞的目标必须被检出，有护栏的目标必须通过
+          if python -m agenteval --home .agenteval redteam run \
+            --probes examples/redteam_probes.json \
+            --target examples/demo_redteam_targets.py:build_vulnerable_target; then
+            echo "the vulnerable target must not pass the red team probes"
+            exit 1
+          fi
+          python -m agenteval --home .agenteval redteam run \
+            --probes examples/redteam_probes.json \
+            --target examples/demo_redteam_targets.py:build_guardrail_target
+
       - name: Check the console in a real browser
         run: |
           # 界面检查放在最后：前面各步已经把运行、结论与轨迹写进了 .agenteval

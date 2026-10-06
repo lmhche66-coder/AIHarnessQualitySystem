@@ -55,6 +55,7 @@ from agenteval.reports import (
 )
 from agenteval.reports import REPORTS_DIRNAME
 from agenteval.otel import ExportError, export_run
+from agenteval.redteam import RedTeamRunner, load_probes
 from agenteval.models import Run
 from agenteval.models import AnyCase
 from agenteval.runner import ContractRunner, load_cases
@@ -256,6 +257,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--endpoint", required=True, help="OTLP/HTTP traces endpoint, e.g. http://host:4318/v1/traces"
     )
     otel_export_parser.add_argument("--json", action="store_true", help="print the OTLP payload")
+
+    redteam_parser = subparsers.add_parser("redteam", help="run security probes against an agent")
+    redteam_subparsers = redteam_parser.add_subparsers(dest="redteam_command", required=True)
+    redteam_run_parser = redteam_subparsers.add_parser("run", help="execute red team probes")
+    redteam_run_parser.add_argument("--probes", type=Path, required=True, help="probe file (JSON or YAML)")
+    redteam_run_parser.add_argument(
+        "--target", required=True, help="target factory as 'package.module:factory'"
+    )
+    redteam_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -288,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_ui(args, store)
     if args.command == "otel":
         return _cmd_otel(args, store)
+    if args.command == "redteam":
+        return _cmd_redteam(args, store)
     return 2
 
 
@@ -894,6 +906,52 @@ def _cmd_otel(args: argparse.Namespace, store: RunStore) -> int:
     else:
         print(f"exported {result.spans} spans from run {run_id} to {result.endpoint}")
     return 0
+
+
+def _cmd_redteam(args: argparse.Namespace, store: RunStore) -> int:
+    if args.redteam_command != "run":
+        return 2
+    try:
+        probes = load_probes(args.probes)
+    except FileNotFoundError:
+        print(f"probe file not found: {args.probes}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        target = load_factory(args.target, "target")()
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not callable(target):
+        print("target factory must return a callable target", file=sys.stderr)
+        return 2
+
+    run = RedTeamRunner(target=target, store=store).run(
+        probes, metadata={"probes_file": str(args.probes), "target": args.target}
+    )
+    if args.json:
+        print(json.dumps(run.metadata.get("redteam_report") or {}, ensure_ascii=False, indent=2))
+    else:
+        print(f"run_id: {run.run_id}")
+        report = run.metadata.get("redteam_report") or {}
+        print(
+            f"probes: {report.get('total', 0)}  passed: {report.get('passed', 0)}  "
+            f"failed: {report.get('failed', 0)}  errored: {report.get('errored', 0)}"
+        )
+        for verdict in run.verdicts:
+            print(f"  [{verdict.status.value:<5}] {verdict.case_id}")
+            for check in verdict.failed_checks:
+                print(f"         - {check.name}: {check.message or 'detector fired'}")
+            if verdict.error:
+                print(f"         - error: {verdict.error}")
+        for category, counts in sorted((report.get("by_category") or {}).items()):
+            print(
+                f"  {category}: total={counts['total']} passed={counts['passed']} "
+                f"failed={counts['failed']} errored={counts['errored']}"
+            )
+    return 1 if run.summary.failed or run.summary.errored else 0
 
 
 def _print_load(run: Run, reports: list[Any]) -> None:
