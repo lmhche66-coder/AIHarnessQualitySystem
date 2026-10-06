@@ -81,6 +81,84 @@ python -m agenteval run --cases my_cases.json --registry mytools.py:build_regist
 - 幂等检查要求工具在返回值中报告 `side_effect_count`；无法观察副作用会被判为失败。
 - 回滚检查要求工具在失败结果中报告 `rolled_back` 与 `remaining`。
 
+## MCP 契约
+
+自建 `ToolRegistry` 之外，平台也能验证通过 JSON-RPC 暴露的 MCP server。平台以子进程 + stdio 启动它，完成 `initialize` / `initialized` 握手，再对能力协商、工具清单与参数契约做断言；不依赖官方 SDK，也不需要网络。
+
+```json
+{
+  "server": {
+    "command": "python",
+    "args": ["my_server.py"],
+    "timeout_s": 10
+  },
+  "cases": [
+    {
+      "id": "handshake-schema-and-arguments",
+      "checks": [
+        { "kind": "capability", "capabilities": ["tools"] },
+        { "kind": "tool_listed", "tool": "echo" },
+        { "kind": "missing_required", "tool": "echo", "args": {} },
+        { "kind": "wrong_type", "tool": "echo", "args": { "message": 123 } },
+        { "kind": "valid_call", "tool": "echo", "args": { "message": "hi" } },
+        { "kind": "schema_consistency", "tool": "echo", "args": { "message": "hi" } }
+      ]
+    }
+  ]
+}
+```
+
+六类检查：
+
+| kind | 关键字段 | 验证内容 |
+| --- | --- | --- |
+| `capability` | `capabilities` | 初始化结果声明了指定能力（默认 `tools`） |
+| `tool_listed` | `tool`、`require_schema` | 工具出现在清单里且声明了输入 schema |
+| `missing_required` | `tool`、`args`、`drop` | 省略必填参数时被结构化拒绝 |
+| `wrong_type` | `tool`、`args` | 参数类型错误时被拒绝 |
+| `valid_call` | `tool`、`args` | 合法参数被接受 |
+| `schema_consistency` | `tool`、`args` | schema 声明的每个必填参数，缺失时确实被拒绝 |
+
+```bash
+python -m agenteval --home .agenteval mcp run --cases examples/mcp_cases.json
+```
+
+`schema_consistency` 是这层的关键：清单里写了必填、实际却不校验，是 MCP server 最常见的契约缺陷，它会被主动构造缺失调用并观察真实行为，而不是只看声明。
+
+## 函数选择打分
+
+工具选错和参数填错，最终答案里未必看得出来。选择打分把调用规整成「函数名 + 参数」逐项比对，覆盖错选、漏选、多选、参数不符、并行调用缺失，以及无关请求下的正确「不调用」。
+
+```json
+{
+  "cases": [
+    {
+      "id": "parallel-complete",
+      "prompt": "把北京和上海的天气都查一下",
+      "available_tools": ["get_weather", "send_email"],
+      "expected": [
+        { "name": "get_weather", "arguments": { "city": "北京" } },
+        { "name": "get_weather", "arguments": { "city": "上海" } }
+      ],
+      "actual": [
+        { "name": "get_weather", "arguments": { "city": "北京" } },
+        { "name": "get_weather", "arguments": { "city": "上海" } }
+      ]
+    }
+  ]
+}
+```
+
+```bash
+python -m agenteval --home .agenteval selection run --cases examples/selection_cases.json
+# 也可以让 agent 当场产出调用，而不是读用例里的 actual
+python -m agenteval --home .agenteval selection run \
+  --cases examples/selection_cases.json \
+  --agent myagent.py:build_agent
+```
+
+用例里的 `actual` 供离线复评使用；`--agent` 则接收用例、返回结构化调用列表。解析模型的自由文本输出是接入方的责任，打分只处理已结构化的调用，因此结论确定且可解释。
+
 ## 运行结果
 
 每次运行写入一个独立目录，默认位于 `.agenteval/runs/<run_id>/`：
@@ -814,6 +892,7 @@ def test_tool_contracts(tmp_path):
 - 轨迹导出只做 OTLP/HTTP JSON，不做 gRPC、批量与重试队列；日志与指标不导出。
 - 红队探针由人声明，不做生成式攻击者；只做确定性检测，不含语义判断。
 - 多轮对话只带确定性脚本模拟器，不实现 LLM 模拟用户、多分支与回溯；并假设 agent 在单轮内完成其工具调用，跨轮保留的异步调用归属会失准。
+- MCP 契约只覆盖 stdio 传输与 tools 能力；HTTP/SSE 传输以及 resources、prompts、sampling 不在范围内。函数选择打分依赖接入方提供结构化调用，不解析模型的自由文本输出。
 
 ## 规格来源
 

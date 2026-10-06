@@ -164,6 +164,19 @@ jobs:
             --agent examples/demo_dialogue_agent.py:build_agent \
             --registry agenteval.fakes:build_demo_registry
 
+      - name: Verify an MCP server's contract
+        run: |
+          # 正确的 server 必须通过，schema 与行为不一致的 server 必须被检出
+          python -m agenteval --home .agenteval mcp run --cases examples/mcp_cases.json
+          if python -m agenteval --home .agenteval mcp run \
+            --cases examples/mcp_flaky_cases.json; then
+            echo "the schema-mismatch server must not pass the MCP contract cases"
+            exit 1
+          fi
+
+      - name: Score tool selection
+        run: python -m agenteval --home .agenteval selection run --cases examples/selection_cases.json
+
       - name: Check the console in a real browser
         run: |
           # 界面检查放在最后：前面各步已经把运行、结论与轨迹写进了 .agenteval

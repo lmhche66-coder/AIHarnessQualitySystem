@@ -57,6 +57,12 @@ from agenteval.reports import REPORTS_DIRNAME
 from agenteval.otel import ExportError, export_run
 from agenteval.redteam import RedTeamRunner, load_probes
 from agenteval.dialogue import DialogueRunner, load_dialogue_cases
+from agenteval.mcp import McpRunner, load_mcp_cases
+from agenteval.selection import (
+    SelectionCall,
+    SelectionRunner,
+    load_selection_cases,
+)
 from agenteval.models import Run
 from agenteval.models import AnyCase
 from agenteval.runner import ContractRunner, load_cases
@@ -284,6 +290,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--simulator", help="optional user simulator factory; defaults to the scripted simulator"
     )
     dialogue_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    mcp_parser = subparsers.add_parser("mcp", help="verify an MCP server's protocol and tool contracts")
+    mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
+    mcp_run_parser = mcp_subparsers.add_parser("run", help="execute MCP contract cases")
+    mcp_run_parser.add_argument("--cases", type=Path, required=True, help="MCP case file (JSON or YAML)")
+    mcp_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    selection_parser = subparsers.add_parser("selection", help="score how an agent selects tools")
+    selection_subparsers = selection_parser.add_subparsers(dest="selection_command", required=True)
+    selection_run_parser = selection_subparsers.add_parser("run", help="execute selection scoring")
+    selection_run_parser.add_argument(
+        "--cases", type=Path, required=True, help="selection case file (JSON or YAML)"
+    )
+    selection_run_parser.add_argument(
+        "--agent", help="optional factory producing actual calls from a case"
+    )
+    selection_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -320,6 +343,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_redteam(args, store)
     if args.command == "dialogue":
         return _cmd_dialogue(args, store)
+    if args.command == "mcp":
+        return _cmd_mcp(args, store)
+    if args.command == "selection":
+        return _cmd_selection(args, store)
     return 2
 
 
@@ -1019,6 +1046,105 @@ def _cmd_dialogue(args: argparse.Namespace, store: RunStore) -> int:
             if verdict.error:
                 print(f"         - error: {verdict.error}")
     return 1 if run.summary.failed or run.summary.errored else 0
+
+
+def _cmd_mcp(args: argparse.Namespace, store: RunStore) -> int:
+    if args.mcp_command != "run":
+        return 2
+    try:
+        case_set = load_mcp_cases(args.cases)
+    except FileNotFoundError:
+        print(f"MCP case file not found: {args.cases}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    run = McpRunner(store=store).run(case_set, metadata={"cases_file": str(args.cases)})
+    if args.json:
+        print(
+            json.dumps(
+                [verdict.model_dump(mode="json") for verdict in run.verdicts],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print(f"run_id: {run.run_id}")
+        print(
+            f"cases: {run.summary.total}  pass: {run.summary.passed}  "
+            f"fail: {run.summary.failed}  error: {run.summary.errored}"
+        )
+        for verdict in run.verdicts:
+            print(f"  [{verdict.status.value:<5}] {verdict.case_id}  ({verdict.duration_ms:.0f} ms)")
+            for check in verdict.failed_checks:
+                print(f"         - {check.name}: {check.message or 'check failed'}")
+            if verdict.error:
+                print(f"         - error: {verdict.error}")
+    return 1 if run.summary.failed or run.summary.errored else 0
+
+
+def _cmd_selection(args: argparse.Namespace, store: RunStore) -> int:
+    if args.selection_command != "run":
+        return 2
+    try:
+        cases = load_selection_cases(args.cases)
+    except FileNotFoundError:
+        print(f"selection case file not found: {args.cases}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    agent: Callable[..., object] | None = None
+    if args.agent:
+        try:
+            agent = load_factory(args.agent, "agent")()
+        except SystemExit as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if not callable(agent):
+            print("agent factory must return a callable agent", file=sys.stderr)
+            return 2
+        try:
+            cases = [_case_with_actual(case, agent) for case in cases]
+        except Exception as exc:  # noqa: BLE001 - 产生调用失败即命令错误
+            print(f"agent failed to produce calls: {type(exc).__name__}: {exc}", file=sys.stderr)
+            return 2
+
+    run = SelectionRunner(store=store).run(
+        cases, metadata={"cases_file": str(args.cases), "agent": args.agent or ""}
+    )
+    if args.json:
+        print(
+            json.dumps(
+                [verdict.model_dump(mode="json") for verdict in run.verdicts],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    else:
+        print(f"run_id: {run.run_id}")
+        print(
+            f"cases: {run.summary.total}  pass: {run.summary.passed}  "
+            f"fail: {run.summary.failed}  error: {run.summary.errored}"
+        )
+        for verdict in run.verdicts:
+            print(f"  [{verdict.status.value:<5}] {verdict.case_id}")
+            for check in verdict.failed_checks:
+                print(f"         - {check.name}: {check.message or 'check failed'}")
+            if verdict.error:
+                print(f"         - error: {verdict.error}")
+    return 1 if run.summary.failed or run.summary.errored else 0
+
+
+def _case_with_actual(case: Any, agent: Callable[..., object]) -> Any:
+    produced = agent(case)
+    calls = [
+        item if isinstance(item, SelectionCall) else SelectionCall.model_validate(item)
+        for item in produced  # type: ignore[union-attr]
+    ]
+    return case.model_copy(update={"actual": calls})
 
 
 def _print_load(run: Run, reports: list[Any]) -> None:

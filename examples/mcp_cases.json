@@ -1,0 +1,23 @@
+{
+  "server": {
+    "command": "python",
+    "args": ["examples/mcp_demo_server.py"],
+    "timeout_s": 10
+  },
+  "cases": [
+    {
+      "id": "handshake-schema-and-arguments",
+      "description": "握手、能力协商、工具清单、参数校验与 schema 行为一致性全部通过",
+      "checks": [
+        { "kind": "capability", "capabilities": ["tools"] },
+        { "kind": "tool_listed", "tool": "echo" },
+        { "kind": "tool_listed", "tool": "add" },
+        { "kind": "missing_required", "tool": "echo", "args": {} },
+        { "kind": "wrong_type", "tool": "echo", "args": { "message": 123 } },
+        { "kind": "valid_call", "tool": "echo", "args": { "message": "hi" } },
+        { "kind": "schema_consistency", "tool": "echo", "args": { "message": "hi" } },
+        { "kind": "schema_consistency", "tool": "add", "args": { "a": 1, "b": 2 } }
+      ]
+    }
+  ]
+}

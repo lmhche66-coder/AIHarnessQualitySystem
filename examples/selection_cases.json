@@ -1,0 +1,31 @@
+{
+  "cases": [
+    {
+      "id": "single-correct",
+      "prompt": "北京今天天气怎么样？",
+      "available_tools": ["get_weather", "send_email"],
+      "expected": [{ "name": "get_weather", "arguments": { "city": "北京" } }],
+      "actual": [{ "name": "get_weather", "arguments": { "city": "北京" } }]
+    },
+    {
+      "id": "parallel-complete",
+      "prompt": "把北京和上海的天气都查一下",
+      "available_tools": ["get_weather", "send_email"],
+      "expected": [
+        { "name": "get_weather", "arguments": { "city": "北京" } },
+        { "name": "get_weather", "arguments": { "city": "上海" } }
+      ],
+      "actual": [
+        { "name": "get_weather", "arguments": { "city": "北京" } },
+        { "name": "get_weather", "arguments": { "city": "上海" } }
+      ]
+    },
+    {
+      "id": "irrelevant-no-call",
+      "prompt": "你好，今天过得怎么样？",
+      "available_tools": ["get_weather", "send_email"],
+      "expected": [],
+      "actual": []
+    }
+  ]
+}

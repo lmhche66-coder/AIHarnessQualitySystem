@@ -1,0 +1,17 @@
+{
+  "server": {
+    "command": "python",
+    "args": ["examples/mcp_demo_server.py"],
+    "env": { "AGENTEVAL_MCP_FLAKY": "1" },
+    "timeout_s": 10
+  },
+  "cases": [
+    {
+      "id": "schema-mismatch-must-be-detected",
+      "description": "schema 声明了必填，但这个 server 接受缺失，一致性判据必须失败",
+      "checks": [
+        { "kind": "schema_consistency", "tool": "echo", "args": { "message": "hi" } }
+      ]
+    }
+  ]
+}
