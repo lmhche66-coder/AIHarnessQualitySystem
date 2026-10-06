@@ -57,6 +57,12 @@ from agenteval.reports import REPORTS_DIRNAME
 from agenteval.otel import ExportError, export_run
 from agenteval.redteam import RedTeamRunner, load_probes
 from agenteval.dialogue import DialogueRunner, load_dialogue_cases
+from agenteval.bridge import (
+    BridgeAgent,
+    BridgeError,
+    load_agent_registry,
+    parse_direct_reference,
+)
 from agenteval.mcp import McpRunner, load_mcp_cases
 from agenteval.selection import (
     SelectionCall,
@@ -89,6 +95,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="override the run home directory (default: .agenteval)",
+    )
+    parser.add_argument(
+        "--agents",
+        type=Path,
+        default=None,
+        help="agent registry file (JSON or YAML) used by '@app-id' references",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -354,6 +366,27 @@ def _store_from_args(args: argparse.Namespace) -> RunStore:
     if args.home is not None:
         return RunStore(Path(args.home) / RUNS_DIRNAME)
     return RunStore.default()
+
+
+def _resolve_agent(
+    ref: str, agents_path: Path | None, capability: str, label: str = "agent"
+) -> Any:
+    """解析被测 agent 引用。
+
+    ``@app-id`` 走注册表，``http(s)://`` 与 ``cmd:`` 直连，其余按既有的
+    ``module:factory`` 与 ``path/to/module.py:factory`` 载入。返回 Bridge 实例
+    或尚未调用的工厂函数，由调用方决定调用时机。
+    """
+
+    if ref.startswith("@"):
+        if agents_path is None:
+            raise SystemExit("--agents <registry file> is required for '@app-id' references")
+        registry = load_agent_registry(agents_path)
+        return BridgeAgent(registry.get(ref[1:]))
+    direct = parse_direct_reference(capability, ref)
+    if direct is not None:
+        return BridgeAgent(direct)
+    return load_factory(ref, label)
 
 
 def _cmd_run(args: argparse.Namespace, store: RunStore) -> int:
@@ -643,25 +676,40 @@ def _cmd_task_run(args: argparse.Namespace, store: RunStore) -> int:
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    environment = load_factory(args.registry, "registry")
-    agent_factory = load_factory(args.agent, "agent")
+    try:
+        environment = load_factory(args.registry, "registry")
+        resolved = _resolve_agent(args.agent, args.agents, "task")
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except (BridgeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
-    def agent(registry: ToolRegistry, task: Any) -> None:
-        # 每个任务重建一次 agent，使 agent 自身的状态也不会跨任务残留
-        runner = agent_factory()
-        if not callable(runner):
-            raise TypeError("agent factory must return a callable agent")
-        runner(registry, task)
+    bridge = resolved if isinstance(resolved, BridgeAgent) else None
+    if bridge is not None:
+        agent = bridge.for_task()
+    else:
+        agent_factory = resolved
 
-    runner = TaskRunner(agent=agent, environment=environment, store=store)
-    run = runner.run(
-        tasks,
-        metadata={
-            "tasks_file": str(args.tasks),
-            "registry": args.registry,
-            "agent": args.agent,
-        },
-    )
+        def agent(registry: ToolRegistry, task: Any) -> None:
+            # 每个任务重建一次 agent，使 agent 自身的状态也不会跨任务残留
+            runner = agent_factory()
+            if not callable(runner):
+                raise TypeError("agent factory must return a callable agent")
+            runner(registry, task)
+
+    metadata: dict[str, Any] = {
+        "tasks_file": str(args.tasks),
+        "registry": args.registry,
+        "agent": args.agent,
+    }
+    if bridge is not None:
+        bridge.record_metadata(metadata)
+
+    run = TaskRunner(agent=agent, environment=environment, store=store).run(tasks, metadata=metadata)
+    if bridge is not None:
+        bridge.apply_usage(run)
     report: dict[str, Any] = run.metadata.get("task_report") or {}
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -967,17 +1015,30 @@ def _cmd_redteam(args: argparse.Namespace, store: RunStore) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     try:
-        target = load_factory(args.target, "target")()
+        resolved = _resolve_agent(args.target, args.agents, "redteam", label="target")
     except SystemExit as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    if not callable(target):
-        print("target factory must return a callable target", file=sys.stderr)
+    except (BridgeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
-    run = RedTeamRunner(target=target, store=store).run(
-        probes, metadata={"probes_file": str(args.probes), "target": args.target}
-    )
+    bridge = resolved if isinstance(resolved, BridgeAgent) else None
+    if bridge is not None:
+        target = bridge.for_redteam()
+    else:
+        target = resolved()
+        if not callable(target):
+            print("target factory must return a callable target", file=sys.stderr)
+            return 2
+
+    metadata: dict[str, Any] = {"probes_file": str(args.probes), "target": args.target}
+    if bridge is not None:
+        bridge.record_metadata(metadata)
+
+    run = RedTeamRunner(target=target, store=store).run(probes, metadata=metadata)
+    if bridge is not None:
+        bridge.apply_usage(run)
     if args.json:
         print(json.dumps(run.metadata.get("redteam_report") or {}, ensure_ascii=False, indent=2))
     else:
@@ -1013,7 +1074,7 @@ def _cmd_dialogue(args: argparse.Namespace, store: RunStore) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     try:
-        agent = load_factory(args.agent, "agent")()
+        resolved = _resolve_agent(args.agent, args.agents, "dialogue")
         environment = (
             load_factory(args.registry, "registry") if args.registry else (lambda: ToolRegistry())
         )
@@ -1021,16 +1082,31 @@ def _cmd_dialogue(args: argparse.Namespace, store: RunStore) -> int:
     except SystemExit as exc:
         print(str(exc), file=sys.stderr)
         return 2
-    if not callable(agent):
-        print("agent factory must return a callable agent", file=sys.stderr)
+    except (BridgeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
         return 2
+
+    bridge = resolved if isinstance(resolved, BridgeAgent) else None
+    if bridge is not None:
+        agent = bridge.for_dialogue()
+    else:
+        agent = resolved()
+        if not callable(agent):
+            print("agent factory must return a callable agent", file=sys.stderr)
+            return 2
+
+    metadata: dict[str, Any] = {"cases_file": str(args.cases), "agent": args.agent}
+    if bridge is not None:
+        bridge.record_metadata(metadata)
 
     run = DialogueRunner(
         agent=agent,
         environment=environment,
         simulator=simulator,
         store=store,
-    ).run(cases, metadata={"cases_file": str(args.cases), "agent": args.agent})
+    ).run(cases, metadata=metadata)
+    if bridge is not None:
+        bridge.apply_usage(run)
     if args.json:
         print(json.dumps(run.metadata.get("dialogues") or {}, ensure_ascii=False, indent=2))
     else:
@@ -1096,25 +1172,38 @@ def _cmd_selection(args: argparse.Namespace, store: RunStore) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    agent: Callable[..., object] | None = None
+    bridge: BridgeAgent | None = None
     if args.agent:
         try:
-            agent = load_factory(args.agent, "agent")()
+            resolved = _resolve_agent(args.agent, args.agents, "selection")
         except SystemExit as exc:
             print(str(exc), file=sys.stderr)
             return 2
-        if not callable(agent):
-            print("agent factory must return a callable agent", file=sys.stderr)
+        except (BridgeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
             return 2
+        if isinstance(resolved, BridgeAgent):
+            bridge = resolved
+            agent: Any = bridge.for_selection()
+        else:
+            agent = resolved()
+            if not callable(agent):
+                print("agent factory must return a callable agent", file=sys.stderr)
+                return 2
         try:
             cases = [_case_with_actual(case, agent) for case in cases]
         except Exception as exc:  # noqa: BLE001 - 产生调用失败即命令错误
             print(f"agent failed to produce calls: {type(exc).__name__}: {exc}", file=sys.stderr)
             return 2
 
+    metadata: dict[str, Any] = {"cases_file": str(args.cases), "agent": args.agent or ""}
+    if bridge is not None:
+        bridge.record_metadata(metadata)
     run = SelectionRunner(store=store).run(
-        cases, metadata={"cases_file": str(args.cases), "agent": args.agent or ""}
+        cases, metadata=metadata
     )
+    if bridge is not None:
+        bridge.apply_usage(run)
     if args.json:
         print(
             json.dumps(

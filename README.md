@@ -44,6 +44,82 @@ python -m agenteval show <run_id>
 | `idempotent_retry` | `idempotency_key`、`repeat` | 重复调用只产生一次副作用 |
 | `partial_rollback` | `steps`、`fail_at` | 中途失败后回滚已完成步骤 |
 
+## 接入任意 agent（Agent Bridge）
+
+被测 agent 不必是 Python，也不必跑在平台进程里。平台用一份 JSON wire 协议与 agent 通信，传输可以是 HTTP endpoint 或本地子进程，agent 只需实现一个入口。
+
+一份最小响应：
+
+```json
+{
+  "protocol": "agenteval.bridge/1",
+  "output": "已确认：电极接触阻抗偏高。",
+  "tool_calls": [{ "name": "echo_tool", "arguments": { "message": "EEG" } }],
+  "usage": { "input_tokens": 120, "output_tokens": 20 }
+}
+```
+
+平台发出的请求带有协议版本、应用标识、能力、用例数据、可用工具与对话历史；agent 返回文本、工具调用与用量。同一个 endpoint 能被 task、dialogue、redteam、selection 四条链路复用，用 `capability` 区分。
+
+两种工具归属模式：
+
+| tool_mode | 谁执行工具 | 适用场景 |
+| --- | --- | --- |
+| `platform` | 平台执行并把结果回传给 agent，驱动多步循环 | agent 只做决策，环境由评测提供 |
+| `agent` | agent 自己执行，只回报调用记录供过程断言 | 生产 agent 自带工具 |
+
+### 注册多个 agent
+
+`--agents` 指向一个注册表，公司内部每个 agent 一个条目，声明 id、版本、传输与能力：
+
+```json
+{
+  "agents": [
+    {
+      "id": "ledger-agent",
+      "version": "1.2.0",
+      "transport": "subprocess",
+      "command": "python",
+      "args": ["examples/agents/ledger_agent.py"],
+      "capabilities": ["task"],
+      "tool_mode": "platform"
+    },
+    {
+      "id": "support-agent",
+      "version": "0.9.3",
+      "transport": "http",
+      "url": "http://127.0.0.1:9210/eval",
+      "capabilities": ["dialogue", "selection", "redteam"],
+      "tool_mode": "platform"
+    }
+  ]
+}
+```
+
+```bash
+# 端到端任务，走子进程 agent
+python -m agenteval --agents examples/agents.json task run \
+  --tasks examples/tasks.json \
+  --registry agenteval.fakes:build_task_registry \
+  --agent @ledger-agent
+
+# 多轮对话，走 HTTP agent（需先启动 examples/agents/http_support_agent.py）
+python -m agenteval --agents examples/agents.json dialogue run \
+  --cases examples/dialogue_cases.json \
+  --registry agenteval.fakes:build_demo_registry \
+  --agent @support-agent
+```
+
+### 三种引用形式
+
+| 引用 | 含义 |
+| --- | --- |
+| `module:factory` | 既有的进程内 Python 工厂，零成本快路径 |
+| `@app-id` | 从注册表取，评测结论会绑定 app 与版本 |
+| `http(s)://...` / `cmd:...` | 直连，不经过注册表 |
+
+一次针对注册表 agent 的运行，结论里会带上 `app` 与 `app_version`，因此能回答「测的是哪个应用的哪个版本」。
+
 ## 接入自己的工具
 
 工具实现 `invoke(**kwargs) -> ToolResult` 协议，注册进 `ToolRegistry`，再通过 `--registry` 指给 CLI：
@@ -893,6 +969,7 @@ def test_tool_contracts(tmp_path):
 - 红队探针由人声明，不做生成式攻击者；只做确定性检测，不含语义判断。
 - 多轮对话只带确定性脚本模拟器，不实现 LLM 模拟用户、多分支与回溯；并假设 agent 在单轮内完成其工具调用，跨轮保留的异步调用归属会失准。
 - MCP 契约只覆盖 stdio 传输与 tools 能力；HTTP/SSE 传输以及 resources、prompts、sampling 不在范围内。函数选择打分依赖接入方提供结构化调用，不解析模型的自由文本输出。
+- Agent Bridge 只做单机直连，覆盖 HTTP 与本地子进程两种传输；不含分布式调度、容器编排、网关旁路采集与多语言 SDK。子进程传输每次调用启动一个进程，适合无状态 agent。
 
 ## 规格来源
 

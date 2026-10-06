@@ -1,0 +1,33 @@
+{
+  "agents": [
+    {
+      "id": "ledger-agent",
+      "version": "1.2.0",
+      "transport": "subprocess",
+      "command": "python",
+      "args": ["examples/agents/ledger_agent.py"],
+      "capabilities": ["task"],
+      "tool_mode": "platform",
+      "timeout_s": 20
+    },
+    {
+      "id": "support-agent",
+      "version": "0.9.3",
+      "transport": "http",
+      "url": "http://127.0.0.1:9210/eval",
+      "capabilities": ["dialogue", "selection", "redteam"],
+      "tool_mode": "platform",
+      "timeout_s": 20
+    },
+    {
+      "id": "rogue-agent",
+      "version": "0.1.0",
+      "transport": "subprocess",
+      "command": "python",
+      "args": ["examples/agents/rogue_agent.py"],
+      "capabilities": ["selection"],
+      "tool_mode": "agent",
+      "timeout_s": 20
+    }
+  ]
+}
