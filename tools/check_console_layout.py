@@ -22,6 +22,8 @@ VIEWPORTS = {
 OVERFLOW_PROBE = """
 () => Array.from(document.querySelectorAll('.detail *'))
   .filter((element) => element.children.length === 0)
+  // 表单控件的 scrollWidth 反映内容可滚动，不代表撑破容器
+  .filter((element) => !['INPUT', 'TEXTAREA', 'SELECT'].includes(element.tagName))
   .filter((element) => element.scrollWidth > element.clientWidth + 2)
   .slice(0, 5)
   .map((element) => ({

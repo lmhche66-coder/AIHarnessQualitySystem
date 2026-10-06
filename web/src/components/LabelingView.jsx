@@ -2,11 +2,22 @@ import { useEffect, useMemo, useState } from "react";
 
 import { createGoldSet, getGoldSet, labelGoldItem, listGoldSets } from "../api.js";
 
-export default function LabelingView({ sets, onChanged, notify }) {
+export default function LabelingView({ sets, onChanged, notify, onCalibrate, busy: parentBusy }) {
   const [name, setName] = useState(null);
   const [detail, setDetail] = useState(null);
   const [cursor, setCursor] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [judgeRef, setJudgeRef] = useState("examples/demo_judges.py:build_keyword_judge");
+
+  async function calibrate() {
+    if (!name) return;
+    setBusy(true);
+    try {
+      await onCalibrate(name, judgeRef.trim());
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (name == null && sets.length > 0) setName(sets[0].name);
@@ -96,6 +107,30 @@ export default function LabelingView({ sets, onChanged, notify }) {
   return (
     <div className="pane">
       <UploadRow onSelect={importFile} busy={busy} />
+      <form
+        className="inline-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          calibrate();
+        }}
+      >
+        <label>
+          <span className="dim small">判定器工厂</span>
+          <input
+            type="text"
+            value={judgeRef}
+            onChange={(event) => setJudgeRef(event.target.value)}
+          />
+        </label>
+        <button
+          type="submit"
+          className="primary"
+          disabled={busy || parentBusy || !name || pending >= detail?.items?.length}
+        >
+          {busy ? "校准中…" : "校准当前金标集"}
+        </button>
+        <span className="dim small">只使用已标注样本</span>
+      </form>
       <div className="split">
         <ul className="run-list">
           {sets.map((entry) => (

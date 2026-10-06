@@ -169,7 +169,7 @@ button { font: inherit; color: inherit; }
 .inline-form label { display: flex; flex-direction: column; gap: 4px; }
 .inline-form select, .inline-form input {
   height: 28px;
-  min-width: 220px;
+  min-width: 260px;
   padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 6px;

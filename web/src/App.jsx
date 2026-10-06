@@ -9,6 +9,9 @@ import {
   listRuns,
   listTraces,
   triggerRun,
+  triggerGate,
+  triggerJudge,
+  triggerTasks,
 } from "./api.js";
 import BaselinesView from "./components/BaselinesView.jsx";
 import ImportView from "./components/ImportView.jsx";
@@ -99,20 +102,65 @@ export default function App() {
     await handleCapture(runId, name.trim() || "default");
   }
 
-  async function handleTrigger(casesFile, registry) {
+  async function handleTrigger(mode, params) {
     setBusy(true);
     setNotice(null);
     setError(null);
     try {
-      const payload = await triggerRun(casesFile, registry);
+      const payload =
+        mode === "tasks"
+          ? await triggerTasks(params.tasksFile, params.registry, params.agent)
+          : await triggerRun(params.casesFile, params.registry);
       notify(
-        `已运行 ${payload.run_id}：通过 ${payload.passed} 失败 ${payload.failed} 错误 ${payload.errored}`
+        mode === "tasks"
+          ? `任务集已运行 ${payload.run_id}：解决 ${payload.resolved}/${payload.total}`
+          : `已运行 ${payload.run_id}：通过 ${payload.passed} 失败 ${payload.failed} 错误 ${payload.errored}`
       );
       await refresh();
       setView("runs");
       await selectRun(payload.run_id);
     } catch (failure) {
       setError(failure.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleGate(runId, baseline) {
+    setBusy(true);
+    setError(null);
+    try {
+      const payload = await triggerGate(runId, baseline);
+      notify(
+        `门禁${payload.passed ? "通过" : "不通过"}：通过率 ${Number(
+          payload.pass_rate || 0
+        ).toFixed(4)}，已写入结论`
+      );
+      await refresh();
+      return payload;
+    } catch (failure) {
+      setError(failure.message);
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCalibrate(gold, judge) {
+    setBusy(true);
+    setError(null);
+    try {
+      const payload = await triggerJudge(gold, judge);
+      notify(
+        `校准完成：一致率 ${Number(payload.agreement || 0).toFixed(4)}，` +
+          `${payload.usable_for_gate ? "可用于门禁" : "仅供参考"}` +
+          (payload.skipped ? `，跳过 ${payload.skipped} 条未标注` : "")
+      );
+      await refresh();
+      return payload;
+    } catch (failure) {
+      setError(failure.message);
+      return null;
     } finally {
       setBusy(false);
     }
@@ -158,7 +206,7 @@ export default function App() {
         )}
         {view === "reports" && (
           <section className="detail full">
-            <ReportsView reports={reports} />
+            <ReportsView reports={reports} runs={runs} onGate={handleGate} busy={busy} />
           </section>
         )}
         {view === "baselines" && (
@@ -174,7 +222,13 @@ export default function App() {
         )}
         {view === "labeling" && (
           <section className="detail full">
-            <LabelingView sets={goldSets} onChanged={refresh} notify={notify} />
+            <LabelingView
+              sets={goldSets}
+              onChanged={refresh}
+              notify={notify}
+              onCalibrate={handleCalibrate}
+              busy={busy}
+            />
           </section>
         )}
         {view === "reflow" && (
@@ -193,30 +247,75 @@ export default function App() {
 }
 
 function TriggerForm({ onTrigger, busy }) {
+  const [mode, setMode] = useState("cases");
   const [casesFile, setCasesFile] = useState("");
   const [registry, setRegistry] = useState("agenteval.fakes:build_demo_registry");
+  const [tasksFile, setTasksFile] = useState("examples/tasks.json");
+  const [taskRegistry, setTaskRegistry] = useState("agenteval.fakes:build_task_registry");
+  const [agent, setAgent] = useState("examples/demo_agent.py:build_agent");
 
   return (
     <form
       className="side-form"
       onSubmit={(event) => {
         event.preventDefault();
-        if (casesFile.trim() && registry.trim()) onTrigger(casesFile.trim(), registry.trim());
+        if (mode === "tasks") {
+          if (tasksFile.trim() && taskRegistry.trim() && agent.trim()) {
+            onTrigger("tasks", {
+              tasksFile: tasksFile.trim(),
+              registry: taskRegistry.trim(),
+              agent: agent.trim(),
+            });
+          }
+          return;
+        }
+        if (casesFile.trim() && registry.trim()) {
+          onTrigger("cases", { casesFile: casesFile.trim(), registry: registry.trim() });
+        }
       }}
     >
       <span className="dim small">触发运行</span>
-      <input
-        type="text"
-        value={casesFile}
-        placeholder="用例文件路径"
-        onChange={(event) => setCasesFile(event.target.value)}
-      />
-      <input
-        type="text"
-        value={registry}
-        placeholder="注册表 module:factory"
-        onChange={(event) => setRegistry(event.target.value)}
-      />
+      <select value={mode} onChange={(event) => setMode(event.target.value)}>
+        <option value="cases">契约与过程用例</option>
+        <option value="tasks">端到端任务集</option>
+      </select>
+      {mode === "cases" ? (
+        <>
+          <input
+            type="text"
+            value={casesFile}
+            placeholder="用例文件路径"
+            onChange={(event) => setCasesFile(event.target.value)}
+          />
+          <input
+            type="text"
+            value={registry}
+            placeholder="注册表 module:factory"
+            onChange={(event) => setRegistry(event.target.value)}
+          />
+        </>
+      ) : (
+        <>
+          <input
+            type="text"
+            value={tasksFile}
+            placeholder="任务集文件路径"
+            onChange={(event) => setTasksFile(event.target.value)}
+          />
+          <input
+            type="text"
+            value={taskRegistry}
+            placeholder="环境工厂 module:factory"
+            onChange={(event) => setTaskRegistry(event.target.value)}
+          />
+          <input
+            type="text"
+            value={agent}
+            placeholder="agent 工厂 module:factory"
+            onChange={(event) => setAgent(event.target.value)}
+          />
+        </>
+      )}
       <button type="submit" className="primary" disabled={busy}>
         运行
       </button>

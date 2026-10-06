@@ -323,6 +323,12 @@ def create_handler(services: ConsoleServices) -> type[BaseHTTPRequestHandler]:
                 return lambda body: (services.reflow.write(body), 201)
             if parts == ["api", "runs"]:
                 return lambda body: (services.runner.trigger(body), 201)
+            if parts == ["api", "tasks"]:
+                return lambda body: (services.runner.trigger_tasks(body), 201)
+            if parts == ["api", "gate"]:
+                return lambda body: (services.gate.run(body), 201)
+            if parts == ["api", "judge"]:
+                return lambda body: (services.judge.run(body), 201)
             return None
 
         def _capture_baseline(self, body: dict[str, Any]) -> tuple[dict[str, Any], int]:

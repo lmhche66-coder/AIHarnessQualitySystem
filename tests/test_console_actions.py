@@ -325,3 +325,184 @@ def test_oversized_body_is_refused(tmp_path: Path) -> None:
         )
     assert status == 413
     assert "exceeds" in payload["error"]
+
+
+# --------------------------------------------------------------------------- 触发
+
+
+def test_gate_trigger_writes_a_conclusion(tmp_path: Path) -> None:
+    write_run(tmp_path / "home", "run-1")
+    with console(tmp_path) as base:
+        status, payload = call(f"{base}/api/gate", "POST", {"run_id": "run-1"})
+        list_status, listing = call(f"{base}/api/reports")
+        missing_status, missing = call(
+            f"{base}/api/gate", "POST", {"run_id": "run-1", "baseline": "absent"}
+        )
+    assert status == 201
+    assert payload["passed"] is True
+    assert payload["conclusion_id"].startswith("gate-")
+    assert list_status == 200
+    assert [record["kind"] for record in listing["reports"]] == ["gate"]
+    assert missing_status == 404
+    assert "absent" in missing["error"]
+
+
+def test_gate_trigger_uses_thresholds_without_a_baseline(tmp_path: Path) -> None:
+    write_run(tmp_path / "home", "run-1")
+    with console(tmp_path) as base:
+        status, payload = call(
+            f"{base}/api/gate", "POST", {"run_id": "run-1", "min_pass_rate": 1.0}
+        )
+    assert status == 201
+    assert payload["baseline_run_id"] is None
+    assert payload["passed"] is True
+
+
+def test_gate_trigger_rejects_bad_run_and_thresholds(tmp_path: Path) -> None:
+    with console(tmp_path) as base:
+        missing, _ = call(f"{base}/api/gate", "POST", {"run_id": "absent"})
+        write_run(tmp_path / "home", "run-1")
+        bad, payload = call(
+            f"{base}/api/gate", "POST", {"run_id": "run-1", "min_pass_rate": 5}
+        )
+    assert missing == 404
+    assert bad == 400
+    assert "threshold" in payload["error"]
+
+
+def test_judge_trigger_uses_labeled_items_and_reports_skips(tmp_path: Path) -> None:
+    catalogue = f"{EXAMPLES / 'demo_judges.py'}:build_keyword_judge"
+    with console(tmp_path) as base:
+        call(
+            f"{base}/api/gold",
+            "POST",
+            {"name": "partial", "items": gold_items()},
+        )
+        status, payload = call(
+            f"{base}/api/judge", "POST", {"gold": "partial", "judge": catalogue}
+        )
+        _, listing = call(f"{base}/api/reports")
+    assert status == 201
+    assert payload["items"] == 1
+    assert payload["skipped"] == 1
+    assert payload["agreement"] == 1.0
+    assert payload["conclusion_id"].startswith("judge-")
+    assert [record["kind"] for record in listing["reports"]] == ["judge"]
+
+
+def test_judge_trigger_requires_labels_and_a_callable_judge(tmp_path: Path) -> None:
+    unlabeled = [
+        {"id": "u1", "prompt": "p", "response_a": "a", "response_b": "b"},
+    ]
+    with console(tmp_path) as base:
+        call(f"{base}/api/gold", "POST", {"name": "empty", "items": unlabeled})
+        unlabeled_status, payload = call(
+            f"{base}/api/judge", "POST", {"gold": "empty", "judge": "x:y"}
+        )
+        call(f"{base}/api/gold", "POST", {"name": "ok", "items": gold_items()})
+        bad_judge, judge_payload = call(
+            f"{base}/api/judge", "POST", {"gold": "ok", "judge": "nope"}
+        )
+        absent, _ = call(
+            f"{base}/api/judge", "POST", {"gold": "absent", "judge": "x:y"}
+        )
+    assert unlabeled_status == 400
+    assert "no labeled items" in payload["error"]
+    assert bad_judge == 400
+    assert "judge" in judge_payload["error"]
+    assert absent == 404
+
+
+def test_task_trigger_runs_the_task_set(tmp_path: Path) -> None:
+    tasks_path = tmp_path / "tasks.json"
+    tasks_path.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "task-charge-and-settle",
+                        "kind": "task",
+                        "checks": [
+                            {
+                                "kind": "final_state",
+                                "tool": "ledger_tool",
+                                "field": "balance",
+                                "expected": 30,
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with console(tmp_path) as base:
+        status, payload = call(
+            f"{base}/api/tasks",
+            "POST",
+            {
+                "tasks_file": str(tasks_path),
+                "registry": "agenteval.fakes:build_task_registry",
+                "agent": f"{EXAMPLES / 'demo_agent.py'}:build_agent",
+            },
+        )
+    assert status == 201
+    assert payload["total"] == 1
+    assert payload["resolved"] == 1
+    assert payload["resolved_rate"] == 1.0
+    stored = RunStore(tmp_path / "home" / "runs").load(payload["run_id"])
+    assert stored.metadata["triggered_by"] == "console"
+
+
+def test_task_trigger_rejects_missing_file_and_bad_agent(tmp_path: Path) -> None:
+    tasks_path = tmp_path / "tasks.json"
+    tasks_path.write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "checks": [
+                            {"kind": "final_state", "tool": "l", "field": "b", "expected": 1}
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with console(tmp_path) as base:
+        missing, _ = call(
+            f"{base}/api/tasks",
+            "POST",
+            {
+                "tasks_file": str(tmp_path / "no.json"),
+                "registry": "agenteval.fakes:build_task_registry",
+                "agent": "x:y",
+            },
+        )
+        bad_agent, payload = call(
+            f"{base}/api/tasks",
+            "POST",
+            {
+                "tasks_file": str(tasks_path),
+                "registry": "agenteval.fakes:build_task_registry",
+                "agent": "nope",
+            },
+        )
+    assert missing == 404
+    assert bad_agent == 400
+    assert "agent" in payload["error"]
+
+
+def test_new_triggers_are_refused_off_loopback(tmp_path: Path) -> None:
+    write_run(tmp_path / "home", "run-1")
+    with console(tmp_path, allow_actions=False) as base:
+        for path, body in (
+            ("/api/gate", {"run_id": "run-1"}),
+            ("/api/judge", {"gold": "g", "judge": "x:y"}),
+            ("/api/tasks", {"tasks_file": "t", "registry": "r", "agent": "a"}),
+        ):
+            status, payload = call(f"{base}{path}", "POST", body)
+            assert status == 403, path
+            assert "read-only" in payload["error"]

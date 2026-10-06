@@ -56,3 +56,11 @@ export const listCaseFiles = () => request("/api/cases").then((data) => data.cas
 
 export const triggerRun = (casesFile, registry) =>
   postJson("/api/runs", { cases_file: casesFile, registry });
+
+export const triggerTasks = (tasksFile, registry, agent) =>
+  postJson("/api/tasks", { tasks_file: tasksFile, registry, agent });
+
+export const triggerGate = (runId, baseline) =>
+  postJson("/api/gate", { run_id: runId, baseline: baseline || null });
+
+export const triggerJudge = (gold, judge) => postJson("/api/judge", { gold, judge });
