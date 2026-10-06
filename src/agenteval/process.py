@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -30,6 +31,18 @@ from agenteval.models import (
 from agenteval.tools import Tool, ToolErrorKind, ToolRegistry, ToolResult
 
 TOOL_CALL_EVENT = "tool_call"
+
+# 让拿不到 registry 的适配器（例如 Bridge 接入的外部 agent）也能把「已经发生」
+# 的工具调用写进当前用例的轨迹。
+_CURRENT_TRACE: contextvars.ContextVar[Trace | None] = contextvars.ContextVar(
+    "agenteval_current_trace", default=None
+)
+
+
+def current_trace() -> Trace | None:
+    """返回当前用例的轨迹；不在用例执行期时返回 ``None``。"""
+
+    return _CURRENT_TRACE.get()
 
 
 class ToolCall(BaseModel):
@@ -151,11 +164,16 @@ class TraceSession:
     """把当前用例的轨迹暴露给工具包装器。"""
 
     _trace: Trace | None = field(default=None, repr=False)
+    _token: Any = field(default=None, repr=False)
 
     def begin_case(self, trace: Trace) -> None:
         self._trace = trace
+        self._token = _CURRENT_TRACE.set(trace)
 
     def end_case(self) -> None:
+        if self._token is not None:
+            _CURRENT_TRACE.reset(self._token)
+            self._token = None
         self._trace = None
 
     def record_call(self, target: str, args: Mapping[str, Any], result: ToolResult) -> None:

@@ -1,0 +1,15 @@
+{
+  "sandbox": {
+    "id": "kingfar-aiops-snapshot",
+    "project": "agent-py",
+    "compose_file": "../../kingfar-aiops/infra/compose.yaml",
+    "health_services": ["etcd", "minio", "milvus", "postgres", "redis"],
+    "reset": "snapshot",
+    "snapshot": "baseline",
+    "snapshot_dir": "../../agent-harness/.agenteval/sandboxes/kingfar-aiops",
+    "teardown": "keep",
+    "health_timeout_s": 180,
+    "poll_interval_s": 3,
+    "command_timeout_s": 900
+  }
+}

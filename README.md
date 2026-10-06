@@ -120,6 +120,34 @@ python -m agenteval --agents examples/agents.json dialogue run \
 
 一次针对注册表 agent 的运行，结论里会带上 `app` 与 `app_version`，因此能回答「测的是哪个应用的哪个版本」。
 
+### 自带工具与审计的 agent
+
+很多生产 agent 的工具、会话与调用审计都在它自己的后端里，平台既不该也拿不到那些工具。这类 agent 用 `tool_mode: agent` 接入：它自行执行工具，把「已经发生过」的调用回报给平台，平台不重复执行，只记入该用例的轨迹，于是调用顺序与多余调用断言照常可用。
+
+`bridges/` 下放针对具体系统的适配桥。以 PhysioAIOps 为例，桥接脚本负责登录、建会话、消费流式回答，再把后端工具调用审计转换成 Bridge 的调用记录：
+
+```json
+{
+  "id": "physio-aiops",
+  "version": "0.1.0",
+  "transport": "subprocess",
+  "command": "python",
+  "args": ["bridges/kingfar_aiops.py"],
+  "env": { "KINGFAR_BASE_URL": "http://127.0.0.1:8010" },
+  "capabilities": ["task"],
+  "tool_mode": "agent",
+  "timeout_s": 240
+}
+```
+
+```bash
+python -m agenteval --home .agenteval --agents examples/kingfar-aiops.agents.json \
+  task run \
+  --tasks examples/kingfar-aiops.tasks.json \
+  --registry agenteval.fakes:build_task_registry \
+  --agent @physio-aiops
+```
+
 ## 接入自己的工具
 
 工具实现 `invoke(**kwargs) -> ToolResult` 协议，注册进 `ToolRegistry`，再通过 `--registry` 指给 CLI：
@@ -572,7 +600,7 @@ python -m agenteval --home .agenteval --agents examples/agents.json task run \
 
 接到评测上以后：整轮开始前做健康检查，不通过就整轮失败、不产出用例判定；每个用例前按策略重置，重置失败只影响该用例；运行记录里带上沙箱的项目名、compose 内容哈希与镜像标签，使结论能追溯到具体环境。不传 `--sandbox` 时行为与之前完全一致。
 
-针对真实基础设施的定义示例见 `examples/kingfar-aiops.sandbox.json`，它指向一份 compose 的 etcd / MinIO / Milvus / PostgreSQL / Redis，用 `reset: none` 只做健康检查，不干扰开发环境。
+针对真实基础设施的定义示例有两个：`examples/kingfar-aiops.sandbox.json` 用 `reset: none`，只做健康检查，不干扰正在开发的环境；`examples/kingfar-aiops.snapshot.json` 用 `reset: snapshot`，先执行 `sandbox snapshot --name baseline` 生成卷快照，之后每个用例前从该快照恢复数据卷。真实 stack 启动较慢，这类定义要把 `command_timeout_s` 调高。
 
 ## 失败回流
 

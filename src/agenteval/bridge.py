@@ -27,10 +27,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from agenteval.dialogue import Conversation, Role
 from agenteval.metrics import summarize_metrics
 from agenteval.models import CaseMetrics, Run, TokenUsage
-from agenteval.process import ToolCall
+from agenteval.process import ToolCall, current_trace, record_tool_call
 from agenteval.redteam import Probe, ProbeOutcome
 from agenteval.selection import SelectionCall
-from agenteval.tools import ToolRegistry
+from agenteval.tools import ToolRegistry, ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover - 仅用于类型标注
     from agenteval.models import TaskCase
@@ -440,6 +440,9 @@ class BridgeAgent:
     # ---------------------------------------------------------------- 能力适配
 
     def for_task(self) -> Callable[["ToolRegistry", "TaskCase"], None]:
+        if self.spec.tool_mode == "agent":
+            return self._task_with_agent_executed_tools()
+
         def run(registry: ToolRegistry, task: "TaskCase") -> None:
             self._require_tool_mode("task")
             tools = _describe_tools(registry)
@@ -469,6 +472,32 @@ class BridgeAgent:
             raise BridgeError(
                 f"agent '{self.spec.id}' exceeded max_steps={self.spec.max_steps} without finishing"
             )
+
+        return run
+
+    def _task_with_agent_executed_tools(self) -> Callable[["ToolRegistry", "TaskCase"], None]:
+        """agent 自带工具：平台不执行任何工具，只把它回报的调用记进轨迹。
+
+        这些调用已经由 agent 侧真实执行过（例如它自己的审计日志），平台记录它们
+        是为了让过程断言（调用顺序、多余调用）仍然可用。
+        """
+
+        def run(registry: ToolRegistry, task: "TaskCase") -> None:
+            prompt = task.description or task.id
+            response = self.invoke(
+                "task",
+                task.model_dump(mode="json"),
+                (),
+                [BridgeMessage(role="user", content=prompt)],
+                task.id,
+            )
+            trace = current_trace()
+            if trace is None:
+                return
+            for call in response.tool_calls:
+                record_tool_call(
+                    trace, call.name, call.arguments, ToolResult(ok=True, value={"executed_by": "agent"})
+                )
 
         return run
 

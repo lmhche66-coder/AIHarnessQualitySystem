@@ -1,0 +1,26 @@
+{
+  "tasks": [
+    {
+      "id": "kingfar-current-time",
+      "kind": "task",
+      "description": "现在几点了？请只回答时间。",
+      "checks": [
+        { "kind": "tool_sequence", "expected": ["get_current_time"], "mode": "subsequence" }
+      ]
+    },
+    {
+      "id": "kingfar-knowledge-documents",
+      "kind": "task",
+      "description": "我的知识库里现在有哪些文档？请列出文件名；如果没有文档就直接说没有。",
+      "checks": [
+        { "kind": "tool_sequence", "expected": ["list_knowledge_documents"], "mode": "subsequence" }
+      ]
+    },
+    {
+      "id": "kingfar-only-time-tool",
+      "kind": "task",
+      "description": "现在几点了？只回答时间，不要去查知识库。",
+      "checks": [{ "kind": "no_extra_calls", "allowed": ["get_current_time"] }]
+    }
+  ]
+}

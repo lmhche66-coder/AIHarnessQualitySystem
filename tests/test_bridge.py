@@ -24,6 +24,7 @@ from agenteval.cli import main
 from agenteval.dialogue import DialogueRunner, load_dialogue_cases
 from agenteval.fakes import build_demo_registry, build_task_registry
 from agenteval.models import Status
+from agenteval.models import TaskCase
 from agenteval.redteam import RedTeamRunner, load_probes
 from agenteval.selection import SelectionRunner, load_selection_cases
 from agenteval.tasks import TaskRunner, load_tasks
@@ -201,11 +202,42 @@ def test_undeclared_capability_is_rejected() -> None:
         bridge.invoke("selection", {"id": "c1"})
 
 
-def test_task_requires_the_platform_tool_mode() -> None:
+def test_task_accepts_the_agent_tool_mode() -> None:
     bridge = BridgeAgent(spec(tool_mode="agent"))
-    task = load_tasks(TASKS)[0]
-    with pytest.raises(BridgeError, match="tool_mode"):
-        bridge.for_task()(build_task_registry(), task)
+    assert callable(bridge.for_task())
+
+
+def test_task_in_agent_mode_records_agent_executed_calls() -> None:
+    agent = spec(
+        args=_script(
+            {
+                "protocol": PROTOCOL_VERSION,
+                "output": "done",
+                "tool_calls": [{"name": "ledger_tool", "arguments": {"op": "settle"}}],
+            }
+        ),
+        tool_mode="agent",
+    )
+    task = TaskCase.model_validate(
+        {
+            "id": "agent-mode-task",
+            "kind": "task",
+            "description": "settle the ledger",
+            "checks": [
+                {"kind": "tool_sequence", "expected": ["ledger_tool"], "mode": "subsequence"}
+            ],
+        }
+    )
+    run = TaskRunner(agent=BridgeAgent(agent).for_task(), environment=build_task_registry).run(
+        [task], run_id="agent-mode"
+    )
+    assert run.summary.passed == 1
+    calls = [
+        event.payload.get("target")
+        for event in run.traces[0].events
+        if event.name == "tool_call"
+    ]
+    assert calls == ["ledger_tool"]
 
 
 def test_loop_exceeding_max_steps_fails() -> None:
