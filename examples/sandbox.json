@@ -1,0 +1,14 @@
+{
+  "sandbox": {
+    "id": "demo-sandbox",
+    "project": "agenteval-sandbox-demo",
+    "compose_file": "sandbox/compose.yaml",
+    "services": ["sleeper"],
+    "health_services": ["sleeper"],
+    "volumes": ["sleeper-data"],
+    "reset": "recreate",
+    "teardown": "down",
+    "health_timeout_s": 90,
+    "poll_interval_s": 1
+  }
+}

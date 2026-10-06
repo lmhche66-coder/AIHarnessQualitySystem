@@ -1,0 +1,17 @@
+name: agenteval-sandbox-demo
+
+services:
+  sleeper:
+    image: alpine:3
+    command: ["sleep", "infinity"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 1s
+    volumes:
+      - sleeper-data:/data
+
+volumes:
+  sleeper-data:

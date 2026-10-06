@@ -201,6 +201,9 @@ jobs:
             --agent @support-agent
           kill "$BRIDGE_PID"
 
+      - name: Verify the sandbox driver against real Docker
+        run: python -m pytest tests/test_sandbox.py -m docker
+
       - name: Check the console in a real browser
         run: |
           # 界面检查放在最后：前面各步已经把运行、结论与轨迹写进了 .agenteval

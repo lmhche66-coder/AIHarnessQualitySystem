@@ -34,3 +34,6 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q"
+markers = [
+    "docker: requires a working docker daemon and image pulls",
+]

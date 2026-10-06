@@ -1,0 +1,12 @@
+{
+  "sandbox": {
+    "id": "kingfar-aiops-infra",
+    "project": "agent-py",
+    "compose_file": "../../kingfar-aiops/infra/compose.yaml",
+    "health_services": ["etcd", "minio", "milvus", "postgres", "redis"],
+    "reset": "none",
+    "teardown": "keep",
+    "health_timeout_s": 180,
+    "poll_interval_s": 3
+  }
+}

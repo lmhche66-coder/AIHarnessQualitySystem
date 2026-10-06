@@ -35,6 +35,7 @@ from agenteval.process import (
     wrap_registry_for_trace,
 )
 from agenteval.runner import new_run_id
+from agenteval.sandbox import SandboxError, SandboxSession
 from agenteval.store import RunStore
 from agenteval.tools import ToolRegistry
 
@@ -244,6 +245,7 @@ class TaskRunner:
     environment: EnvironmentFactory
     store: RunStore | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    sandbox: SandboxSession | None = None
 
     def run_task(self, task: TaskCase, attempt: int = 1) -> tuple[Verdict, Trace]:
         """在干净环境里跑一次任务，返回判定与轨迹。
@@ -254,6 +256,16 @@ class TaskRunner:
         case_id = attempt_case_id(task.id, attempt, task.attempts)
         trace = Trace(case_id=case_id)
         start = time.perf_counter()
+        if self.sandbox is not None:
+            try:
+                self.sandbox.before_case(case_id)
+            except Exception as exc:  # noqa: BLE001 - 重置失败只影响该用例
+                return self._error(
+                    case_id,
+                    f"sandbox reset failed: {type(exc).__name__}: {exc}",
+                    trace,
+                    start,
+                )
         try:
             registry = self.environment()
         except Exception as exc:  # noqa: BLE001 - 环境失败不终止整轮运行
@@ -307,11 +319,21 @@ class TaskRunner:
             started_at=datetime.now(timezone.utc),
             metadata=merged_metadata,
         )
+        if self.sandbox is not None:
+            try:
+                self.sandbox.ensure_ready()
+            except Exception as exc:  # noqa: BLE001 - 环境不可用则整轮失败
+                raise SandboxError(
+                    f"sandbox is not ready: {type(exc).__name__}: {exc}"
+                ) from exc
+            run.metadata["sandbox"] = self.sandbox.describe()
         for task in task_list:
             for attempt in range(1, task.attempts + 1):
                 verdict, trace = self.run_task(task, attempt)
                 run.verdicts.append(verdict)
                 run.traces.append(trace)
+        if self.sandbox is not None:
+            self.sandbox.close()
         run.metadata["task_report"] = summarize_tasks(task_list, run.verdicts)
         run.metadata["attempt_report"] = summarize_attempts(task_list, run.verdicts)
         run.metadata["metrics"] = summarize_metrics(run.verdicts).model_dump(mode="json")

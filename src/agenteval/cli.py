@@ -64,6 +64,12 @@ from agenteval.bridge import (
     parse_direct_reference,
 )
 from agenteval.mcp import McpRunner, load_mcp_cases
+from agenteval.sandbox import (
+    DockerSandbox,
+    SandboxError,
+    SandboxSession,
+    load_sandbox_spec,
+)
 from agenteval.selection import (
     SelectionCall,
     SelectionRunner,
@@ -207,6 +213,9 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="agent factory as 'package.module:factory' or 'path/to/module.py:factory'",
     )
+    task_run_parser.add_argument(
+        "--sandbox", type=Path, help="sandbox definition for per-case environment isolation"
+    )
     task_run_parser.add_argument("--json", action="store_true", help="emit the task report as JSON")
 
     triage_parser = subparsers.add_parser(
@@ -319,6 +328,27 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent", help="optional factory producing actual calls from a case"
     )
     selection_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    sandbox_parser = subparsers.add_parser(
+        "sandbox", help="manage a compose-backed evaluation sandbox"
+    )
+    sandbox_subparsers = sandbox_parser.add_subparsers(dest="sandbox_command", required=True)
+    sandbox_up = sandbox_subparsers.add_parser("up", help="start the sandbox and wait for health")
+    sandbox_down = sandbox_subparsers.add_parser("down", help="stop the sandbox")
+    sandbox_health = sandbox_subparsers.add_parser("health", help="check sandbox health")
+    sandbox_reset = sandbox_subparsers.add_parser("reset", help="reset to a known state")
+    sandbox_snapshot = sandbox_subparsers.add_parser("snapshot", help="save the volumes")
+    for sandbox_sub in (
+        sandbox_up,
+        sandbox_down,
+        sandbox_health,
+        sandbox_reset,
+        sandbox_snapshot,
+    ):
+        sandbox_sub.add_argument("--sandbox", type=Path, required=True, help="sandbox definition")
+        sandbox_sub.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    sandbox_down.add_argument("--volumes", action="store_true", help="also remove data volumes")
+    sandbox_snapshot.add_argument("--name", help="snapshot name")
     return parser
 
 
@@ -359,6 +389,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_mcp(args, store)
     if args.command == "selection":
         return _cmd_selection(args, store)
+    if args.command == "sandbox":
+        return _cmd_sandbox(args, store)
     return 2
 
 
@@ -707,7 +739,25 @@ def _cmd_task_run(args: argparse.Namespace, store: RunStore) -> int:
     if bridge is not None:
         bridge.record_metadata(metadata)
 
-    run = TaskRunner(agent=agent, environment=environment, store=store).run(tasks, metadata=metadata)
+    sandbox_session: SandboxSession | None = None
+    if args.sandbox is not None:
+        try:
+            sandbox_session = SandboxSession(DockerSandbox(load_sandbox_spec(args.sandbox)))
+        except FileNotFoundError:
+            print(f"sandbox definition not found: {args.sandbox}", file=sys.stderr)
+            return 2
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        metadata["sandbox_file"] = str(args.sandbox)
+
+    try:
+        run = TaskRunner(
+            agent=agent, environment=environment, store=store, sandbox=sandbox_session
+        ).run(tasks, metadata=metadata)
+    except SandboxError as exc:
+        print(f"sandbox error: {exc}", file=sys.stderr)
+        return 2
     if bridge is not None:
         bridge.apply_usage(run)
     report: dict[str, Any] = run.metadata.get("task_report") or {}
@@ -1234,6 +1284,54 @@ def _case_with_actual(case: Any, agent: Callable[..., object]) -> Any:
         for item in produced  # type: ignore[union-attr]
     ]
     return case.model_copy(update={"actual": calls})
+
+
+def _cmd_sandbox(args: argparse.Namespace, store: RunStore) -> int:
+    try:
+        spec = load_sandbox_spec(args.sandbox)
+    except FileNotFoundError:
+        print(f"sandbox definition not found: {args.sandbox}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    sandbox = DockerSandbox(spec)
+    payload: dict[str, Any]
+    try:
+        if args.sandbox_command == "up":
+            sandbox.up()
+            sandbox.wait_until_healthy()
+            payload = sandbox.version()
+        elif args.sandbox_command == "down":
+            sandbox.down(remove_volumes=args.volumes)
+            payload = {"project": spec.project, "removed_volumes": bool(args.volumes)}
+        elif args.sandbox_command == "health":
+            healthy, problems = sandbox.health()
+            _print_sandbox_payload(
+                {"project": spec.project, "healthy": healthy, "problems": problems}, args.json
+            )
+            return 0 if healthy else 1
+        elif args.sandbox_command == "reset":
+            sandbox.reset()
+            payload = {"project": spec.project, "reset_strategy": spec.reset}
+        elif args.sandbox_command == "snapshot":
+            payload = sandbox.snapshot(getattr(args, "name", None))
+        else:
+            return 2
+    except SandboxError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _print_sandbox_payload(payload, args.json)
+    return 0
+
+
+def _print_sandbox_payload(payload: dict[str, Any], as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return
+    for key, value in payload.items():
+        print(f"{key}: {value}")
 
 
 def _print_load(run: Run, reports: list[Any]) -> None:

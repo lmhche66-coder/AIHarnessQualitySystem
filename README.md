@@ -524,6 +524,56 @@ attempts: 3  pass@1: 0.0000  pass@k: 1.0000
 python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0
 ```
 
+## 真实沙箱（容器 + 快照/重置）
+
+端到端任务的隔离如果只靠工厂重建进程内对象，依赖的数据库与向量库仍是同一份长期运行的实例，上一个用例写进去的数据会影响下一个。沙箱能力把一组 compose 服务变成可启动、可检查、可快照、可重置的对象。
+
+沙箱定义声明 compose 文件、项目名、健康要求与重置策略：
+
+```json
+{
+  "sandbox": {
+    "id": "demo-sandbox",
+    "project": "agenteval-sandbox-demo",
+    "compose_file": "sandbox/compose.yaml",
+    "services": ["sleeper"],
+    "health_services": ["sleeper"],
+    "volumes": ["sleeper-data"],
+    "reset": "recreate",
+    "teardown": "down",
+    "health_timeout_s": 90
+  }
+}
+```
+
+三种重置策略：
+
+| reset | 做什么 | 适用 |
+| --- | --- | --- |
+| `recreate` | 移除数据卷后重建，回到全新状态 | 正确性优先的回归 |
+| `snapshot` | 从已保存的卷快照恢复，回到预置数据状态 | 需要初始数据的业务任务 |
+| `none` | 只检查健康，不改环境 | 只读评测与本地调试 |
+
+```bash
+# 独立使用
+python -m agenteval sandbox up --sandbox examples/sandbox.json
+python -m agenteval sandbox health --sandbox examples/sandbox.json
+python -m agenteval sandbox snapshot --sandbox examples/sandbox.json --name baseline
+python -m agenteval sandbox reset --sandbox examples/sandbox.json
+python -m agenteval sandbox down --sandbox examples/sandbox.json --volumes
+
+# 接到评测上：整轮前健康门禁，每个用例前重置
+python -m agenteval --home .agenteval --agents examples/agents.json task run \
+  --tasks examples/tasks.json \
+  --registry agenteval.fakes:build_task_registry \
+  --agent @ledger-agent \
+  --sandbox examples/sandbox.json
+```
+
+接到评测上以后：整轮开始前做健康检查，不通过就整轮失败、不产出用例判定；每个用例前按策略重置，重置失败只影响该用例；运行记录里带上沙箱的项目名、compose 内容哈希与镜像标签，使结论能追溯到具体环境。不传 `--sandbox` 时行为与之前完全一致。
+
+针对真实基础设施的定义示例见 `examples/kingfar-aiops.sandbox.json`，它指向一份 compose 的 etcd / MinIO / Milvus / PostgreSQL / Redis，用 `reset: none` 只做健康检查，不干扰开发环境。
+
 ## 失败回流
 
 看到「用例没过」之后，下一步应该是把它变成可反复执行的回归用例。否则真实失败样本永远停在报告里，这是质量闭环最常缺的一环。
@@ -970,6 +1020,7 @@ def test_tool_contracts(tmp_path):
 - 多轮对话只带确定性脚本模拟器，不实现 LLM 模拟用户、多分支与回溯；并假设 agent 在单轮内完成其工具调用，跨轮保留的异步调用归属会失准。
 - MCP 契约只覆盖 stdio 传输与 tools 能力；HTTP/SSE 传输以及 resources、prompts、sampling 不在范围内。函数选择打分依赖接入方提供结构化调用，不解析模型的自由文本输出。
 - Agent Bridge 只做单机直连，覆盖 HTTP 与本地子进程两种传输；不含分布式调度、容器编排、网关旁路采集与多语言 SDK。子进程传输每次调用启动一个进程，适合无状态 agent。
+- 沙箱以 compose 项目为单位，只做数据卷级快照，不做容器进程级快照（CRIU）；同一沙箱同一时间只允许一轮运行，并发调度不在范围内。
 
 ## 规格来源
 
