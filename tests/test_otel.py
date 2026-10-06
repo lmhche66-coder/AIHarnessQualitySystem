@@ -98,8 +98,11 @@ def test_span_hierarchy_is_three_levels() -> None:
 
 
 def test_identifiers_are_deterministic_and_run_specific() -> None:
-    first = build_otlp_payload(make_run("run-1"))
-    second = build_otlp_payload(make_run("run-1"))
+    # 同一份运行导出两次必须完全一致；重新构造的运行会带不同的时间戳，
+    # 那不是「同一份运行」，所以只比较它的 trace 标识。
+    run = make_run("run-1")
+    first = build_otlp_payload(run)
+    second = build_otlp_payload(run)
     other = build_otlp_payload(make_run("run-2"))
     assert first == second
     assert first["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["traceId"] != (
