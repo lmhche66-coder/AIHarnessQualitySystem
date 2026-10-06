@@ -56,6 +56,7 @@ from agenteval.reports import (
 from agenteval.reports import REPORTS_DIRNAME
 from agenteval.otel import ExportError, export_run
 from agenteval.redteam import RedTeamRunner, load_probes
+from agenteval.dialogue import DialogueRunner, load_dialogue_cases
 from agenteval.models import Run
 from agenteval.models import AnyCase
 from agenteval.runner import ContractRunner, load_cases
@@ -266,6 +267,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--target", required=True, help="target factory as 'package.module:factory'"
     )
     redteam_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    dialogue_parser = subparsers.add_parser("dialogue", help="run multi-turn dialogue cases")
+    dialogue_subparsers = dialogue_parser.add_subparsers(dest="dialogue_command", required=True)
+    dialogue_run_parser = dialogue_subparsers.add_parser("run", help="execute dialogue cases")
+    dialogue_run_parser.add_argument(
+        "--cases", type=Path, required=True, help="dialogue case file (JSON or YAML)"
+    )
+    dialogue_run_parser.add_argument(
+        "--agent", required=True, help="turn-based agent factory as 'package.module:factory'"
+    )
+    dialogue_run_parser.add_argument(
+        "--registry", help="environment factory; defaults to an empty tool registry"
+    )
+    dialogue_run_parser.add_argument(
+        "--simulator", help="optional user simulator factory; defaults to the scripted simulator"
+    )
+    dialogue_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
     return parser
 
 
@@ -300,6 +318,8 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_otel(args, store)
     if args.command == "redteam":
         return _cmd_redteam(args, store)
+    if args.command == "dialogue":
+        return _cmd_dialogue(args, store)
     return 2
 
 
@@ -951,6 +971,53 @@ def _cmd_redteam(args: argparse.Namespace, store: RunStore) -> int:
                 f"  {category}: total={counts['total']} passed={counts['passed']} "
                 f"failed={counts['failed']} errored={counts['errored']}"
             )
+    return 1 if run.summary.failed or run.summary.errored else 0
+
+
+def _cmd_dialogue(args: argparse.Namespace, store: RunStore) -> int:
+    if args.dialogue_command != "run":
+        return 2
+    try:
+        cases = load_dialogue_cases(args.cases)
+    except FileNotFoundError:
+        print(f"dialogue file not found: {args.cases}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    try:
+        agent = load_factory(args.agent, "agent")()
+        environment = (
+            load_factory(args.registry, "registry") if args.registry else (lambda: ToolRegistry())
+        )
+        simulator = load_factory(args.simulator, "simulator")() if args.simulator else None
+    except SystemExit as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not callable(agent):
+        print("agent factory must return a callable agent", file=sys.stderr)
+        return 2
+
+    run = DialogueRunner(
+        agent=agent,
+        environment=environment,
+        simulator=simulator,
+        store=store,
+    ).run(cases, metadata={"cases_file": str(args.cases), "agent": args.agent})
+    if args.json:
+        print(json.dumps(run.metadata.get("dialogues") or {}, ensure_ascii=False, indent=2))
+    else:
+        print(f"run_id: {run.run_id}")
+        print(
+            f"cases: {run.summary.total}  pass: {run.summary.passed}  "
+            f"fail: {run.summary.failed}  error: {run.summary.errored}"
+        )
+        for verdict in run.verdicts:
+            print(f"  [{verdict.status.value:<5}] {verdict.case_id}  ({verdict.duration_ms:.0f} ms)")
+            for check in verdict.failed_checks:
+                print(f"         - {check.name}: {check.message or 'check failed'}")
+            if verdict.error:
+                print(f"         - error: {verdict.error}")
     return 1 if run.summary.failed or run.summary.errored else 0
 
 

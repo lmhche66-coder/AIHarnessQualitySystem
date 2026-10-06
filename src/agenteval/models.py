@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Status(str, Enum):
@@ -219,9 +219,59 @@ class TaskCase(BaseModel):
     checks: list[TaskCheckSpec] = Field(default_factory=list)
 
 
+class RequiredClarificationCheck(ProcessCheck):
+    """断言 agent 在首次调用某工具之前问过指定内容。"""
+
+    kind: Literal["required_clarification"] = "required_clarification"
+    marker: str = ""
+    before_tool: str = ""
+
+
+class TerminationCheck(ProcessCheck):
+    """断言最后一轮 agent 回复包含指定收尾标记。"""
+
+    kind: Literal["termination"] = "termination"
+    marker: str = ""
+
+
+DialogueCheckSpec = Annotated[
+    Union[
+        ToolSequenceCheck,
+        NoExtraCallsCheck,
+        RecoveryCheck,
+        StateContinuityCheck,
+        BudgetCheck,
+        RequiredClarificationCheck,
+        TerminationCheck,
+    ],
+    Field(discriminator="kind"),
+]
+
+
+class DialogueCase(BaseModel):
+    """一条多轮对话用例：平台驱动循环，agent 只负责一轮。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1)
+    kind: Literal["dialogue"] = "dialogue"
+    description: str | None = None
+    script: list[str] = Field(default_factory=list)
+    max_turns: int = Field(default=6, ge=1)
+    checks: list[DialogueCheckSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _require_script_and_checks(self) -> "DialogueCase":
+        if not self.script:
+            raise ValueError("dialogue case must declare at least one scripted user message")
+        if not self.checks:
+            raise ValueError("dialogue case must declare at least one check")
+        return self
+
+
 # 各类用例的必填字段互斥，且都禁止未声明字段，因此用智能联合即可区分；
 # 这样既支持显式声明 kind，也保持既有未声明 kind 的用例文件可用。
-AnyCase = Union[Case, ProcessCase, TaskCase]
+AnyCase = Union[Case, ProcessCase, TaskCase, DialogueCase]
 
 
 class CheckOutcome(BaseModel):

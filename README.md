@@ -254,6 +254,52 @@ python -m agenteval --home .agenteval gate
 
 两个来源互斥：一条过程用例既声明步骤、又引用外部轨迹会被判 error，而不是让系统替你选一个。引用的轨迹不存在时直接报错并终止，不会留下一次没有意义的运行。
 
+## 多轮对话
+
+一次性任务协议下，平台把环境与任务交给 agent 就交出了控制权，「它有没有先问再动手」「几轮才收敛」这类问题无从断言。多轮场景用一条独立协议：平台掌握循环，agent 只负责一轮。
+
+```python
+# examples/demo_dialogue_agent.py
+def build_agent():
+    def respond(registry, conversation):
+        if not conversation.agent_turns():
+            return "请先告诉我故障发生的时间范围。"   # 先问
+        registry.get("echo_tool").invoke(message="EEG sample loss")
+        return "已确认：电极接触阻抗偏高。"            # 收尾
+    return respond
+```
+
+用例声明剧本、回合预算与断言：
+
+```json
+{
+  "id": "diagnose-after-asking",
+  "kind": "dialogue",
+  "script": ["EEG 通道 3 一直低幅，帮我看看。", "时间大概是今天下午两点到三点。"],
+  "max_turns": 4,
+  "checks": [
+    { "kind": "required_clarification", "marker": "时间", "before_tool": "echo_tool" },
+    { "kind": "termination", "marker": "已确认" }
+  ]
+}
+```
+
+两类对话断言：
+
+| kind | 关键字段 | 验证内容 |
+| --- | --- | --- |
+| `required_clarification` | `marker`、`before_tool` | 首次调用 `before_tool` 之前，必须有一个 agent 回合包含 `marker` |
+| `termination` | `marker` | 最后一个 agent 回合必须包含 `marker` |
+
+```bash
+python -m agenteval --home .agenteval dialogue run \
+  --cases examples/dialogue_cases.json \
+  --agent examples/demo_dialogue_agent.py:build_agent \
+  --registry agenteval.fakes:build_demo_registry
+```
+
+剧本模拟器用尽即自然结束，此时回合预算判据通过；预算先耗尽则判失败，于是「几轮内收敛」本身成为可断言的判据。每轮的工具调用被切片归到对应回合，对话结果同样写入运行记录与轨迹，因此四类过程断言与门禁无需改动即可复用。
+
 ## 端到端任务成功率
 
 前面几层回答的是「工具对不对、过程对不对」。业务方只关心一个问题：一批真实任务里做成了几件。
@@ -767,6 +813,7 @@ def test_tool_contracts(tmp_path):
 - UI 检查只覆盖 Web，未实现移动端驱动；未做视觉回归与像素比对。
 - 轨迹导出只做 OTLP/HTTP JSON，不做 gRPC、批量与重试队列；日志与指标不导出。
 - 红队探针由人声明，不做生成式攻击者；只做确定性检测，不含语义判断。
+- 多轮对话只带确定性脚本模拟器，不实现 LLM 模拟用户、多分支与回溯；并假设 agent 在单轮内完成其工具调用，跨轮保留的异步调用归属会失准。
 
 ## 规格来源
 

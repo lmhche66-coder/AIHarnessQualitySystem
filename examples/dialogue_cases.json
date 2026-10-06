@@ -1,0 +1,18 @@
+{
+  "cases": [
+    {
+      "id": "diagnose-after-asking",
+      "kind": "dialogue",
+      "description": "必须先问清故障时间再动手查日志，并以确认收尾",
+      "script": [
+        "EEG 通道 3 一直低幅，帮我看看。",
+        "时间大概是今天下午两点到三点。"
+      ],
+      "max_turns": 4,
+      "checks": [
+        { "kind": "required_clarification", "marker": "时间", "before_tool": "echo_tool" },
+        { "kind": "termination", "marker": "已确认" }
+      ]
+    }
+  ]
+}

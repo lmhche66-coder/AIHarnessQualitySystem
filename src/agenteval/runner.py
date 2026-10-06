@@ -19,6 +19,7 @@ from agenteval.contracts import check_case
 from agenteval.models import (
     AnyCase,
     CheckOutcome,
+    DialogueCase,
     ProcessCase,
     Run,
     Status,
@@ -144,6 +145,12 @@ class ContractRunner:
         return self.trace_override, None
 
     def _evaluate(self, case: AnyCase, trace: Trace, override: Trace | None) -> Verdict:
+        if isinstance(case, DialogueCase):
+            return Verdict(
+                case_id=case.id,
+                status=Status.ERROR,
+                error="dialogue cases must be run with 'agenteval dialogue run', not 'agenteval run'",
+            )
         if isinstance(case, TaskCase):
             return Verdict(
                 case_id=case.id,
