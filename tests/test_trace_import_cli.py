@@ -14,8 +14,8 @@ from agenteval.trace_store import TraceStore
 from agenteval.tools import ToolRegistry, ToolResult
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
-TRACE_NAME = "kingfar-eeg-sample-loss"
-CASE_ID = "task-eeg-sample-loss"
+TRACE_NAME = "imported-payment-trace"
+CASE_ID = "task-payment-timeout"
 
 
 class BombTool:
@@ -51,7 +51,7 @@ def import_trace(home: Path, source: Path, capsys: pytest.CaptureFixture[str]) -
 
 def test_cli_imports_json_audit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = tmp_path / "home"
-    report = import_trace(home, EXAMPLES / "kingfar_audit.json", capsys)
+    report = import_trace(home, EXAMPLES / "audit_export.json", capsys)
     assert report["records"] == 5
     assert report["case_id"] == CASE_ID
     assert any("state_continuity" in item for item in report["limitations"])
@@ -63,7 +63,7 @@ def test_cli_imports_json_audit(tmp_path: Path, capsys: pytest.CaptureFixture[st
 
 def test_cli_imports_csv_audit(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     home = tmp_path / "home"
-    import_trace(home, EXAMPLES / "kingfar_audit.csv", capsys)
+    import_trace(home, EXAMPLES / "audit_export.csv", capsys)
     trace = TraceStore(home / "traces").load(TRACE_NAME)
     assert [call.target for call in extract_tool_calls(trace)] == [
         "knowledge_retrieval",
@@ -97,9 +97,9 @@ def test_imported_trace_runs_process_cases_without_tools(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     home = tmp_path / "home"
-    import_trace(home, EXAMPLES / "kingfar_audit.json", capsys)
+    import_trace(home, EXAMPLES / "audit_export.json", capsys)
 
-    cases = load_cases(EXAMPLES / "kingfar_cases.json")
+    cases = load_cases(EXAMPLES / "import_cases.json")
     bombs = [BombTool("knowledge_retrieval"), BombTool("SearchLog"), BombTool("ListTopics")]
     runner = ContractRunner(
         registry=ToolRegistry(bombs),

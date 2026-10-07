@@ -133,7 +133,7 @@ def test_gold_creation_rejects_invalid_items(tmp_path: Path) -> None:
 
 
 def test_trace_upload_imports_json_audit(tmp_path: Path) -> None:
-    content = (EXAMPLES / "kingfar_audit.json").read_text(encoding="utf-8")
+    content = (EXAMPLES / "audit_export.json").read_text(encoding="utf-8")
     with console(tmp_path) as base:
         status, payload = call(
             f"{base}/api/traces",
@@ -151,7 +151,7 @@ def test_trace_upload_imports_json_audit(tmp_path: Path) -> None:
 
 
 def test_trace_upload_imports_csv_audit(tmp_path: Path) -> None:
-    content = (EXAMPLES / "kingfar_audit.csv").read_text(encoding="utf-8")
+    content = (EXAMPLES / "audit_export.csv").read_text(encoding="utf-8")
     with console(tmp_path) as base:
         status, payload = call(
             f"{base}/api/traces",

@@ -1,0 +1,15 @@
+{
+  "sandbox": {
+    "id": "compose-snapshot",
+    "project": "my-service",
+    "compose_file": "path/to/compose.yaml",
+    "health_services": [],
+    "reset": "snapshot",
+    "snapshot": "baseline",
+    "snapshot_dir": ".agenteval/sandboxes/my-service",
+    "teardown": "keep",
+    "health_timeout_s": 180,
+    "poll_interval_s": 3,
+    "command_timeout_s": 900
+  }
+}

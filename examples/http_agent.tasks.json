@@ -1,7 +1,7 @@
 {
   "tasks": [
     {
-      "id": "kingfar-current-time",
+      "id": "agent-current-time",
       "kind": "task",
       "description": "现在几点了？请只回答时间。",
       "checks": [
@@ -9,7 +9,7 @@
       ]
     },
     {
-      "id": "kingfar-knowledge-documents",
+      "id": "agent-knowledge-documents",
       "kind": "task",
       "description": "我的知识库里现在有哪些文档？请列出文件名；如果没有文档就直接说没有。",
       "checks": [
@@ -17,7 +17,7 @@
       ]
     },
     {
-      "id": "kingfar-only-time-tool",
+      "id": "agent-only-time-tool",
       "kind": "task",
       "description": "现在几点了？只回答时间，不要去查知识库。",
       "checks": [{ "kind": "no_extra_calls", "allowed": ["get_current_time"] }]

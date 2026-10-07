@@ -16,8 +16,8 @@ from agenteval.process import extract_tool_calls
 from agenteval.tools import ToolErrorKind
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
-JSON_FIXTURE = EXAMPLES / "kingfar_audit.json"
-CSV_FIXTURE = EXAMPLES / "kingfar_audit.csv"
+JSON_FIXTURE = EXAMPLES / "audit_export.json"
+CSV_FIXTURE = EXAMPLES / "audit_export.csv"
 
 
 def test_parse_json_records_from_example() -> None:

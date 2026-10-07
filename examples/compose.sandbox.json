@@ -1,0 +1,12 @@
+{
+  "sandbox": {
+    "id": "compose-infra",
+    "project": "my-service",
+    "compose_file": "path/to/compose.yaml",
+    "health_services": [],
+    "reset": "none",
+    "teardown": "keep",
+    "health_timeout_s": 180,
+    "poll_interval_s": 3
+  }
+}
