@@ -102,11 +102,11 @@ jobs:
       - name: Import an external agent audit
         run: |
           python -m agenteval --home .agenteval trace import \
-            --from examples/kingfar_audit.json \
-            --name kingfar-eeg-sample-loss \
-            --case-id task-eeg-sample-loss
+            --from examples/audit_export.json \
+            --name imported-payment-trace \
+            --case-id task-payment-timeout
           python -m agenteval --home .agenteval run \
-            --cases examples/kingfar_cases.json --demo
+            --cases examples/audit_cases.json --demo
           python -m agenteval --home .agenteval gate --min-pass-rate 1.0 --max-errors 0
 
       - name: Calibrate a judge

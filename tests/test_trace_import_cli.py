@@ -99,7 +99,7 @@ def test_imported_trace_runs_process_cases_without_tools(
     home = tmp_path / "home"
     import_trace(home, EXAMPLES / "audit_export.json", capsys)
 
-    cases = load_cases(EXAMPLES / "import_cases.json")
+    cases = load_cases(EXAMPLES / "audit_cases.json")
     bombs = [BombTool("knowledge_retrieval"), BombTool("SearchLog"), BombTool("ListTopics")]
     runner = ContractRunner(
         registry=ToolRegistry(bombs),

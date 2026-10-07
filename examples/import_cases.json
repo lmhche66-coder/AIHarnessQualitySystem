@@ -1,26 +1,19 @@
 {
   "cases": [
     {
-      "id": "task-payment-timeout",
+      "id": "process-exact-sequence",
       "kind": "process",
-      "description": "对导入的审计轨迹做过程断言",
-      "trace": "imported-payment-trace",
+      "description": "对已保存轨迹复评：多步流程必须按声明顺序发生且没有多余步骤",
       "checks": [
         {
           "kind": "tool_sequence",
-          "expected": ["knowledge_retrieval", "ListTopics", "SearchLog"],
-          "mode": "subsequence"
+          "expected": ["echo_tool", "idempotent_tool", "payout_tool"],
+          "mode": "exact"
         },
         {
           "kind": "no_extra_calls",
-          "allowed": ["knowledge_retrieval", "ListTopics", "SearchLog"]
-        },
-        {
-          "kind": "recovery",
-          "failed_tool": "SearchLog",
-          "recovered_by": "SearchLog"
-        },
-        { "kind": "budget", "max_calls": 6, "max_retries": 2 }
+          "allowed": ["echo_tool", "idempotent_tool", "payout_tool"]
+        }
       ]
     }
   ]

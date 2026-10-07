@@ -1,0 +1,27 @@
+{
+  "cases": [
+    {
+      "id": "task-payment-timeout",
+      "kind": "process",
+      "description": "对导入的审计轨迹做过程断言",
+      "trace": "imported-payment-trace",
+      "checks": [
+        {
+          "kind": "tool_sequence",
+          "expected": ["knowledge_retrieval", "ListTopics", "SearchLog"],
+          "mode": "subsequence"
+        },
+        {
+          "kind": "no_extra_calls",
+          "allowed": ["knowledge_retrieval", "ListTopics", "SearchLog"]
+        },
+        {
+          "kind": "recovery",
+          "failed_tool": "SearchLog",
+          "recovered_by": "SearchLog"
+        },
+        { "kind": "budget", "max_calls": 6, "max_retries": 2 }
+      ]
+    }
+  ]
+}
