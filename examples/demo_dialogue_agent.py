@@ -18,8 +18,8 @@ def build_agent() -> Callable[[Any, Conversation], str]:
     def respond(registry: Any, conversation: Conversation) -> str:
         if not _agent_turns(conversation):
             return "请先告诉我故障发生的时间范围。"
-        registry.get("echo_tool").invoke(message="EEG sample loss")
-        return "已确认：电极接触阻抗偏高。"
+        registry.get("echo_tool").invoke(message="order-12345 payment timeout")
+        return "已确认：支付网关超时。"
 
     return respond
 
@@ -29,8 +29,8 @@ def build_hasty_agent() -> Callable[[Any, Conversation], str]:
 
     def respond(registry: Any, conversation: Conversation) -> str:
         if not _agent_turns(conversation):
-            registry.get("echo_tool").invoke(message="EEG sample loss")
-            return "已确认：电极接触阻抗偏高。"
+            registry.get("echo_tool").invoke(message="order-12345 payment timeout")
+            return "已确认：支付网关超时。"
         return "已确认：如上。"
 
     return respond

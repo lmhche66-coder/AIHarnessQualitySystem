@@ -66,18 +66,7 @@ python -m agenteval show <run_id>
 
 被测 agent 不必是 Python，也不必跑在平台进程里。平台用一份 JSON wire 协议与 agent 通信，传输可以是 HTTP endpoint 或本地子进程，agent 只需实现一个入口。
 
-一份最小响应：
-
-```json
-{
-  "protocol": "agenteval.bridge/1",
-  "output": "已确认：电极接触阻抗偏高。",
-  "tool_calls": [{ "name": "echo_tool", "arguments": { "message": "EEG" } }],
-  "usage": { "input_tokens": 120, "output_tokens": 20 }
-}
-```
-
-平台发出的请求带有协议版本、应用标识、能力、用例数据、可用工具与对话历史；agent 返回文本、工具调用与用量。同一个 endpoint 能被 task、dialogue、redteam、selection 四条链路复用，用 `capability` 区分。
+平台发出的请求带有协议版本、应用标识、能力、用例数据、可用工具与对话历史；agent 返回文本输出、工具调用列表与 token 用量。同一个 endpoint 能被 task、dialogue、redteam、selection 四条链路复用，用 `capability` 区分。
 
 两种工具归属模式：
 
@@ -142,16 +131,16 @@ python -m agenteval --agents examples/agents.json dialogue run \
 
 很多生产 agent 的工具、会话与调用审计都在它自己的后端里，平台既不该也拿不到那些工具。这类 agent 用 `tool_mode: agent` 接入：它自行执行工具，把「已经发生过」的调用回报给平台，平台不重复执行，只记入该用例的轨迹，于是调用顺序与多余调用断言照常可用。
 
-`bridges/` 下放针对具体系统的适配桥。以 PhysioAIOps 为例，桥接脚本负责登录、建会话、消费流式回答，再把后端工具调用审计转换成 Bridge 的调用记录：
+`bridges/` 用来放针对具体系统的适配桥：一个独立脚本，用那个系统自己的方式完成一次调用（认证、建会话、消费流式响应），再把它的工具调用记录转成 Bridge 的格式。这类脚本不进平台内核，换一个系统只需要再写一个桥，并在注册表里加一条 `tool_mode: agent` 的条目。
 
 ```json
 {
-  "id": "physio-aiops",
+  "id": "my-agent",
   "version": "0.1.0",
   "transport": "subprocess",
   "command": "python",
-  "args": ["bridges/kingfar_aiops.py"],
-  "env": { "KINGFAR_BASE_URL": "http://127.0.0.1:8010" },
+  "args": ["bridges/my_agent.py"],
+  "env": { "MY_AGENT_BASE_URL": "http://127.0.0.1:8080" },
   "capabilities": ["task"],
   "tool_mode": "agent",
   "timeout_s": 240
@@ -159,11 +148,11 @@ python -m agenteval --agents examples/agents.json dialogue run \
 ```
 
 ```bash
-python -m agenteval --home .agenteval --agents examples/kingfar-aiops.agents.json \
+python -m agenteval --home .agenteval --agents my_agents.json \
   task run \
-  --tasks examples/kingfar-aiops.tasks.json \
+  --tasks my_tasks.json \
   --registry agenteval.fakes:build_task_registry \
-  --agent @physio-aiops
+  --agent @my-agent
 ```
 
 ## 接入自己的工具
@@ -464,8 +453,8 @@ def build_agent():
     def respond(registry, conversation):
         if not conversation.agent_turns():
             return "请先告诉我故障发生的时间范围。"   # 先问
-        registry.get("echo_tool").invoke(message="EEG sample loss")
-        return "已确认：电极接触阻抗偏高。"            # 收尾
+        registry.get("echo_tool").invoke(message="order-12345 payment timeout")
+        return "已确认：支付网关超时。"                # 收尾
     return respond
 ```
 
@@ -475,7 +464,7 @@ def build_agent():
 {
   "id": "diagnose-after-asking",
   "kind": "dialogue",
-  "script": ["EEG 通道 3 一直低幅，帮我看看。", "时间大概是今天下午两点到三点。"],
+  "script": ["订单 12345 一直没支付成功，帮我看看。", "时间大概是今天下午两点到三点。"],
   "max_turns": 4,
   "checks": [
     { "kind": "required_clarification", "marker": "时间", "before_tool": "echo_tool" },
@@ -618,7 +607,7 @@ python -m agenteval --home .agenteval --agents examples/agents.json task run \
 
 接到评测上以后：整轮开始前做健康检查，不通过就整轮失败、不产出用例判定；每个用例前按策略重置，重置失败只影响该用例；运行记录里带上沙箱的项目名、compose 内容哈希与镜像标签，使结论能追溯到具体环境。不传 `--sandbox` 时行为与之前完全一致。
 
-针对真实基础设施的定义示例有两个：`examples/kingfar-aiops.sandbox.json` 用 `reset: none`，只做健康检查，不干扰正在开发的环境；`examples/kingfar-aiops.snapshot.json` 用 `reset: snapshot`，先执行 `sandbox snapshot --name baseline` 生成卷快照，之后每个用例前从该快照恢复数据卷。真实 stack 启动较慢，这类定义要把 `command_timeout_s` 调高。
+沙箱定义指向任意 compose 文件即可。`reset: none` 只做健康检查，适合不干扰正在开发的环境；`reset: snapshot` 则先执行 `sandbox snapshot --name baseline` 生成卷快照，之后每个用例前从该快照恢复数据卷。真实 stack 启动较慢，这类定义要把 `command_timeout_s` 调高。
 
 ## 失败回流
 
@@ -690,22 +679,22 @@ emitted regression cases: 1  dataset size: 1
 
 ```bash
 python -m agenteval --home .agenteval trace import \
-  --from examples/kingfar_audit.json \
-  --name kingfar-eeg-sample-loss \
-  --case-id task-eeg-sample-loss
+  --from path/to/audit_export.json \
+  --name imported-checkout-trace \
+  --case-id task-checkout-timeout
 ```
 
 ```
-trace 'kingfar-eeg-sample-loss' imported from examples\kingfar_audit.json
-records: 5  case: task-eeg-sample-loss  events: 5
+trace 'imported-checkout-trace' imported from path/to/audit_export.json
+records: 5  case: task-checkout-timeout  events: 5
 limitation: no raw result values were recorded; the state_continuity check cannot be evaluated on this trace
 limitation: 1 call(s) have no completion; they are recorded as interrupted without a result or duration
 ```
 
-JSON 数组与 CSV 导出都支持，示例取的是 kingfar-aiops `/audits/tool-calls/export` 的列结构。导入后就是普通命名轨迹：
+JSON 数组与 CSV 导出都支持：只要有工具名、参数、状态、起止时间与耗时，服务端就能把它转成轨迹，字段缺失时记为限制而不是报错。导入后就是普通命名轨迹，可以用过程用例对它求值：
 
 ```bash
-python -m agenteval --home .agenteval run --cases examples/kingfar_cases.json --demo
+python -m agenteval --home .agenteval run --cases path/to/import_cases.json --demo
 ```
 
 ```
@@ -713,7 +702,7 @@ cases: 1  pass: 1  fail: 0  error: 0
 metrics: calls=5 retries=1 p50=6020.0ms p95=6020.0ms tokens=0/0 usage=not reported
 ```
 
-指标全部来自审计本身：5 次调用、1 次重复（同参数重试 `SearchLog`）、跨度 6 秒，其中 3 秒是那次 opensearch 超时。这正是功能判据看不见、但业务方会问的东西。
+指标全部来自审计本身：5 次调用、1 次重复（同参数重试）、跨度 6 秒，其中 3 秒耗在超时的那次调用上。这正是只看最终答案时看不见、但业务方会追问的东西。
 
 三个刻意的设计：
 
