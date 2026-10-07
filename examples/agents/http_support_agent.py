@@ -19,9 +19,9 @@ def _dialogue(request: dict[str, Any]) -> dict[str, Any]:
     if not any(message.get("role") == "assistant" for message in messages):
         return {"output": "请先告诉我故障发生的时间范围。"}
     return {
-        "output": "已确认：电极接触阻抗偏高。",
+        "output": "已确认：支付网关超时。",
         "tool_calls": [
-            {"name": "echo_tool", "arguments": {"message": "EEG sample loss"}}
+            {"name": "echo_tool", "arguments": {"message": "order-12345 payment timeout"}}
         ],
     }
 

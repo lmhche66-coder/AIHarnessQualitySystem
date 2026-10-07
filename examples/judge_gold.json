@@ -1,52 +1,52 @@
 {
   "items": [
     {
-      "id": "eeg-low-amplitude",
-      "prompt": "EEG 通道 3 持续低幅，可能的根因？",
-      "response_a": "根因：电极接触阻抗偏高。",
-      "response_b": "可能是很多原因导致的，需要进一步排查各个环节，包括设备、线缆与采集软件。",
+      "id": "checkout-latency",
+      "prompt": "结算接口 P99 延迟突然升高，可能的根因？",
+      "response_a": "根因：下游库存服务连接池被打满，需要核对连接数与超时配置。",
+      "response_b": "可能是很多原因导致的，需要进一步排查各个环节，包括网络、依赖与配置。",
       "expected": "a"
     },
     {
-      "id": "feature-timeout",
-      "prompt": "采集软件报特征超时，先查什么？",
+      "id": "job-timeout",
+      "prompt": "异步任务报执行超时，先查什么？",
       "response_a": "检查网络。",
-      "response_b": "根因：特征计算任务积压，先看队列深度与单帧处理耗时。",
+      "response_b": "根因：任务队列积压，先看队列深度与单任务处理耗时。",
       "expected": "b"
     },
     {
-      "id": "bluetooth-drop",
-      "prompt": "蓝牙频繁掉线怎么定位？",
-      "response_a": "根因：设备侧省电策略导致连接空闲被回收，需要核对连接参数与设备固件版本。",
-      "response_b": "换一根线试试。",
+      "id": "connection-drop",
+      "prompt": "长连接频繁断开怎么定位？",
+      "response_a": "根因：网关侧空闲连接回收策略过短，需要核对超时参数与客户端重连逻辑。",
+      "response_b": "换一根网线试试。",
       "expected": "a"
     },
     {
-      "id": "store-write-failed",
-      "prompt": "分析服务写入失败怎么处理？",
+      "id": "storage-write-failed",
+      "prompt": "写入对象存储失败怎么处理？",
       "response_a": "需要检查磁盘、权限、中间件和网络等很多方面。",
       "response_b": "根因：存储配额已满。",
       "expected": "b"
     },
     {
-      "id": "impedance-alert",
-      "prompt": "电极阻抗告警怎么响应？",
-      "response_a": "根因：贴片干涸。",
-      "response_b": "先记录告警时间与通道号，再联系现场人员复核，必要时更换耗材并复测。",
+      "id": "resource-alert",
+      "prompt": "磁盘使用率告警怎么响应？",
+      "response_a": "根因：日志文件未轮转。",
+      "response_b": "先记录告警时间与实例名，再联系值班同学复核，必要时扩容并复测。",
       "expected": "a"
     },
     {
-      "id": "emg-battery",
-      "prompt": "EMG 电量骤降如何排查？",
-      "response_a": "换电池。",
-      "response_b": "根因：电池老化叠加采样频率上调，需要核对电量曲线与最近一次配置变更。",
+      "id": "battery-drain",
+      "prompt": "移动端电量消耗骤增如何排查？",
+      "response_a": "换块电池。",
+      "response_b": "根因：后台轮询频率被上调，需要核对电量曲线与最近一次配置变更。",
       "expected": "b"
     },
     {
-      "id": "pupil-lost",
-      "prompt": "瞳孔丢失告警如何定位？",
-      "response_a": "根因：红外补光不足导致瞳孔边界无法提取，需要核对环境光照与补光板工作状态。",
-      "response_b": "重启设备。",
+      "id": "data-missing",
+      "prompt": "上报数据缺失告警如何定位？",
+      "response_a": "根因：上报进程与数据源的时间同步失效，需要核对时钟源与最近一次部署。",
+      "response_b": "重启一下试试。",
       "expected": "a"
     },
     {

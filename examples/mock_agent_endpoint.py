@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 LATENCY_S = 0.05
 BODY = json.dumps(
     {
-        "answer": "根因：电极接触阻抗偏高。",
+        "answer": "根因：下游库存服务连接池被打满。",
         "usage": {
             "llm_calls": 3,
             "tool_calls": 5,

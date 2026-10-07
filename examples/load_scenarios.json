@@ -7,7 +7,7 @@
         "url": "/api/aiops/diagnose",
         "method": "POST",
         "headers": { "Content-Type": "application/json" },
-        "body": "{\"query\":\"EEG 采样丢失\"}"
+        "body": "{\"query\":\"结算接口超时\"}"
       },
       "concurrency": 8,
       "requests": 40,

@@ -58,14 +58,14 @@ def gold_items() -> list[dict[str, object]]:
         {
             "id": "i1",
             "prompt": "哪个更好？",
-            "response_a": "根因：电极接触阻抗偏高。",
+            "response_a": "根因：下游连接池被打满。",
             "response_b": "再查查。",
         },
         {
             "id": "i2",
             "prompt": "第二个呢？",
             "response_a": "再查查。",
-            "response_b": "根因：补光不足。",
+            "response_b": "根因：日志未轮转。",
             "expected": "b",
         },
     ]
