@@ -1,12 +1,12 @@
 {
   "agents": [
     {
-      "id": "physio-aiops",
+      "id": "http-agent",
       "version": "0.1.0",
       "transport": "subprocess",
       "command": "python",
-      "args": ["bridges/kingfar_aiops.py"],
-      "env": { "KINGFAR_BASE_URL": "http://127.0.0.1:8010" },
+      "args": ["bridges/http_agent.py"],
+      "env": { "AGENT_BASE_URL": "http://127.0.0.1:8080" },
       "capabilities": ["task"],
       "tool_mode": "agent",
       "timeout_s": 240

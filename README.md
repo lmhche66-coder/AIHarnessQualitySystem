@@ -131,16 +131,16 @@ python -m agenteval --agents examples/agents.json dialogue run \
 
 很多生产 agent 的工具、会话与调用审计都在它自己的后端里，平台既不该也拿不到那些工具。这类 agent 用 `tool_mode: agent` 接入：它自行执行工具，把「已经发生过」的调用回报给平台，平台不重复执行，只记入该用例的轨迹，于是调用顺序与多余调用断言照常可用。
 
-`bridges/` 用来放针对具体系统的适配桥：一个独立脚本，用那个系统自己的方式完成一次调用（认证、建会话、消费流式响应），再把它的工具调用记录转成 Bridge 的格式。这类脚本不进平台内核，换一个系统只需要再写一个桥，并在注册表里加一条 `tool_mode: agent` 的条目。
+`bridges/` 用来放这类适配桥。仓库里带了一个模板 `bridges/http_agent.py`，走的是「登录 → 建会话 → 发消息 → 拉动作记录」这套常见形状；换成你自己的系统时，只改其中四个函数里的路径与字段名即可，平台内核不用动。
 
 ```json
 {
-  "id": "my-agent",
+  "id": "http-agent",
   "version": "0.1.0",
   "transport": "subprocess",
   "command": "python",
-  "args": ["bridges/my_agent.py"],
-  "env": { "MY_AGENT_BASE_URL": "http://127.0.0.1:8080" },
+  "args": ["bridges/http_agent.py"],
+  "env": { "AGENT_BASE_URL": "http://127.0.0.1:8080" },
   "capabilities": ["task"],
   "tool_mode": "agent",
   "timeout_s": 240
@@ -148,11 +148,11 @@ python -m agenteval --agents examples/agents.json dialogue run \
 ```
 
 ```bash
-python -m agenteval --home .agenteval --agents my_agents.json \
+python -m agenteval --home .agenteval --agents examples/http_agent.agents.json \
   task run \
   --tasks my_tasks.json \
   --registry agenteval.fakes:build_task_registry \
-  --agent @my-agent
+  --agent @http-agent
 ```
 
 ## 接入自己的工具
