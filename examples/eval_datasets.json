@@ -1,0 +1,10 @@
+{
+  "datasets": {
+    "basic_function": [
+      "tasks.json"
+    ],
+    "multi_turn": [
+      "self_contained_cases.json"
+    ]
+  }
+}

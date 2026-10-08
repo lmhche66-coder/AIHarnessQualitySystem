@@ -188,6 +188,21 @@ class LedgerTool(SchemaTool):
         return ToolResult(ok=True, value={"balance": self.balance, "entries": len(self.entries)})
 
 
+def build_noop_task_agent() -> Callable[[Any, Any], None]:
+    """不调用任何工具、也不改环境的示例 agent，供测试与演示使用。"""
+
+    def run(registry: Any, task: Any) -> None:
+        return None
+
+    return run
+
+
+def build_agent_registry() -> ToolRegistry:
+    """agent 评测用的示例环境：任务要的 ledger_tool 与对话要的 echo_tool。"""
+
+    return ToolRegistry([EchoTool(), SlowTool(), LedgerTool()])
+
+
 def build_task_registry() -> ToolRegistry:
     """端到端任务用的干净环境：每次调用都返回互不影响的实例。"""
 

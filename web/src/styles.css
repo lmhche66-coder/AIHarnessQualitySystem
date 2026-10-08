@@ -295,3 +295,34 @@ button { font: inherit; color: inherit; }
 @media (max-width: 720px) {
   .pair { grid-template-columns: 1fr; }
 }
+
+/* 记分卡：三维三栏 + 指标进度条。进度条无文本，宽度用百分比，天然不溢出 */
+.scorecard-cols {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.scorecard-col { margin-bottom: 14px; }
+.scorecard-cols .scorecard-col { margin-bottom: 0; }
+.metric-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 3px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.metric-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.metric-value { flex: 0 0 auto; }
+.metric-note { flex: 0 0 auto; }
+.bar { flex: 1 1 100%; height: 6px; border-radius: 3px; background: #eef1f5; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); }
+.bar > span.ok { background: var(--ok); }
+.bar > span.warn { background: var(--warn); }
+.bar > span.bad { background: var(--bad); }
+.pill.skipped { color: var(--dim); }
+
+@media (max-width: 900px) {
+  .scorecard-cols { grid-template-columns: 1fr; }
+}

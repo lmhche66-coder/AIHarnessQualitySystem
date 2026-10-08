@@ -1,0 +1,50 @@
+{
+  "cases": [
+    {
+      "id": "tool-call-missing-required",
+      "target": "echo_tool",
+      "scene": "参数映射",
+      "dataset_type": "tool_call",
+      "description": "必填参数缺失时必须返回结构化校验错误",
+      "input": { "message": "hello" },
+      "check": { "kind": "missing_required", "drop": ["message"], "metric": "tool_call_accuracy" }
+    },
+    {
+      "id": "tool-call-wrong-type",
+      "target": "echo_tool",
+      "scene": "参数映射",
+      "dataset_type": "tool_call",
+      "description": "参数类型错误时必须返回结构化校验错误并指明字段",
+      "input": { "message": "hello", "count": 2 },
+      "check": {
+        "kind": "wrong_type",
+        "overrides": { "count": "not-an-integer" },
+        "metric": "param_mapping_accuracy"
+      }
+    },
+    {
+      "id": "tool-call-sequence",
+      "kind": "process",
+      "scene": "多步流程",
+      "dataset_type": "tool_call",
+      "description": "多步流程必须按声明顺序调用且没有多余步骤",
+      "steps": [
+        { "target": "echo_tool", "input": { "message": "reserve" } },
+        { "target": "idempotent_tool", "input": { "idempotency_key": "order-1" } }
+      ],
+      "checks": [
+        {
+          "kind": "tool_sequence",
+          "expected": ["echo_tool", "idempotent_tool"],
+          "mode": "exact",
+          "metric": "tool_call_accuracy"
+        },
+        {
+          "kind": "no_extra_calls",
+          "allowed": ["echo_tool", "idempotent_tool"],
+          "metric": "tool_call_accuracy"
+        }
+      ]
+    }
+  ]
+}

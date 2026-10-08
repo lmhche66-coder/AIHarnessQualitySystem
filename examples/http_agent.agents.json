@@ -5,10 +5,15 @@
       "version": "0.1.0",
       "transport": "subprocess",
       "command": "python",
-      "args": ["bridges/http_agent.py"],
-      "env": { "AGENT_BASE_URL": "http://127.0.0.1:8080" },
-      "capabilities": ["task"],
-      "tool_mode": "agent",
+      "args": [
+        "bridges/http_agent.py"
+      ],
+      "env": {
+        "AGENT_BASE_URL": "http://127.0.0.1:8080"
+      },
+      "capabilities": [
+        "task"
+      ],
       "timeout_s": 240
     }
   ]

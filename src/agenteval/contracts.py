@@ -50,8 +50,19 @@ def check_case(case: Case, tool: Tool, trace: Trace) -> Verdict:
             error=f"unsupported check kind: {case.check.kind}",
         )
     checks = handler(case, tool, trace)
+    _stamp_metric(checks, case.check.metric)
     status = Status.PASS if checks and all(check.passed for check in checks) else Status.FAIL
     return Verdict(case_id=case.id, status=status, checks=checks)
+
+
+def _stamp_metric(checks: list[CheckOutcome], metric: str | None) -> None:
+    """把用例声明的指标标识补写到尚未归口的断言上。"""
+
+    if not metric:
+        return
+    for check in checks:
+        if check.metric is None:
+            check.metric = metric
 
 
 def _check_missing_required(case: Case, tool: Tool, trace: Trace) -> list[CheckOutcome]:

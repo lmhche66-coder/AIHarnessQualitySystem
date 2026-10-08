@@ -121,6 +121,19 @@ jobs:
             exit 1
           fi
 
+      - name: Run structured judge tasks
+        run: |
+          # 演示裁判既要检出不合格用例，也要在路由错误时跳过下游指标
+          if python -m agenteval --home .agenteval judge task \
+            --cases examples/judge_task_cases.json \
+            --tasks examples/judge_tasks.json \
+            --judge examples/demo_judge_tasks.py:build_keyword_judge; then
+            echo "the demo judge tasks must surface the failing case"
+            exit 1
+          fi
+          # 逐指标结论进入同一份记分卡，被跳过的指标不计入分母
+          python -m agenteval --home .agenteval report > /dev/null
+
       - name: Measure pass@k with repeated attempts
         run: |
           python -m agenteval --home .agenteval task run \
@@ -177,6 +190,56 @@ jobs:
       - name: Score tool selection
         run: python -m agenteval --home .agenteval selection run --cases examples/selection_cases.json
 
+      - name: Judge with trace evidence
+        run: |
+          # 轨迹感知的裁判：把运行轨迹折算成证据交给 Judge
+          python -m agenteval --home .agenteval --agents examples/module_agents.json task run \
+            --tasks examples/module_tasks.json \
+            --registry agenteval.fakes:build_task_registry \
+            --agent @module-agent
+          RUN_ID=$(AGENTEVAL_HOME=.agenteval python -c "from agenteval.store import RunStore; print(RunStore.default().latest_run_id())")
+          OUT=$(python -m agenteval --home .agenteval judge task \
+            --cases examples/judge_task_module_cases.json \
+            --tasks examples/judge_tasks.json \
+            --run "$RUN_ID" \
+            --judge examples/demo_judge_tasks.py:build_keyword_judge)
+          echo "$OUT"
+          echo "$OUT" | grep -q "faithfulness=skipped"
+
+      - name: Evaluate an agent that brings its own tools
+        run: |
+          # 文章的口径：工具属于 agent 自己，平台不派发、不执行
+          python -m agenteval --home .agenteval eval run \
+            --scope basic_function \
+            --datasets examples/self_contained_datasets.json \
+            --agents examples/self_contained.agents.json \
+            --agent @self-contained \
+            --judge examples/demo_judge_tasks.py:build_keyword_judge \
+            --judge-tasks examples/eval_judge_tasks.json \
+            --retries 0
+
+      - name: Submit an evaluation asynchronously
+        run: |
+          python -m agenteval --home .agenteval eval submit \
+            --scope end_to_end --datasets examples/eval_datasets.json \
+            --agents examples/self_contained.agents.json \
+            --agent @self-contained \
+            --concurrency 1 --json > /tmp/job.json
+          sleep 5
+          python -c "import json; j=json.load(open('/tmp/job.json')); r=json.load(open('.agenteval/jobs/'+j['id']+'.json')); assert r['status']=='completed', r; print('job', r['status'], r.get('run_id'))"
+
+      - name: Run an evaluation from scope to report
+        run: |
+          # 范围 → 自动装配数据集 → 并发执行 → 记分卡，一次请求直达报告
+          python -m agenteval --home .agenteval eval run \
+            --scope end_to_end \
+            --datasets examples/eval_datasets.json \
+            --agents examples/self_contained.agents.json \
+            --agent @self-contained \
+            --judge examples/demo_judge_tasks.py:build_keyword_judge \
+            --judge-tasks examples/eval_judge_tasks.json \
+            --concurrency 1 --retries 0
+
       - name: Evaluate agents over the bridge
         run: |
           # 子进程 agent：注册表驱动，端到端任务必须全部解决
@@ -204,6 +267,9 @@ jobs:
       - name: Verify the sandbox driver against real Docker
         run: python -m pytest tests/test_sandbox.py -m docker
 
+      - name: Build a scorecard for the console
+        run: python -m agenteval --home .agenteval report
+
       - name: Check the console in a real browser
         run: |
           # 界面检查放在最后：前面各步已经把运行、结论与轨迹写进了 .agenteval
@@ -213,3 +279,4 @@ jobs:
           python tools/check_console_layout.py http://127.0.0.1:8000
           python -m agenteval --home .agenteval ui run --flows examples/ui_flows.json
           kill "$CONSOLE_PID"
+

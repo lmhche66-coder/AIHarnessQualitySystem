@@ -1,0 +1,10 @@
+{
+  "tasks": [
+    { "metric": "task_completion", "kind": "binary", "instruction": "回答是否完成了用户的问题" },
+    { "metric": "faithfulness", "kind": "binary", "instruction": "回答是否忠实于检索证据，未编造实体" },
+    { "metric": "route_accuracy", "kind": "classification", "labels": ["skill_hit", "skill_miss"] },
+    { "metric": "tool_call_accuracy", "kind": "multi_label", "labels": ["trace_tool", "error_code_tool", "repo_vector_search"] },
+    { "metric": "param_mapping_accuracy", "kind": "extraction", "fields": ["country", "product_id"] },
+    { "metric": "planning_path_score", "kind": "score", "min_score": 0, "max_score": 1, "threshold": 0.5 }
+  ]
+}

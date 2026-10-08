@@ -1,0 +1,61 @@
+{
+  "tasks": [
+    {
+      "id": "task-trace-skill-hit",
+      "kind": "task",
+      "scene": "Trace 排查",
+      "dataset_type": "basic_function",
+      "description": "Trace 排查：应命中 Skill 并调用 trace 工具",
+      "checks": [
+        {
+          "kind": "intent_match",
+          "expected_intent": "trace_lookup",
+          "expected_skill": "trace-analyzer",
+          "metric": "intent_accuracy"
+        },
+        {
+          "kind": "route_decision",
+          "expected_route": "skill_hit",
+          "expected_tools": ["trace_query"],
+          "metric": "route_accuracy"
+        },
+        {
+          "kind": "tool_decision",
+          "expected_tools": ["trace_query"],
+          "metric": "tool_decision_accuracy"
+        }
+      ]
+    },
+    {
+      "id": "task-knowledge-qa-route-miss",
+      "kind": "task",
+      "scene": "领域知识问答",
+      "dataset_type": "knowledge_qa",
+      "description": "知识问答：应走知识库检索并正确召回知识片段",
+      "checks": [
+        {
+          "kind": "intent_match",
+          "expected_intent": "knowledge_qa",
+          "metric": "intent_accuracy"
+        },
+        {
+          "kind": "route_decision",
+          "expected_route": "skill_miss",
+          "metric": "route_accuracy"
+        },
+        {
+          "kind": "retrieval_hit",
+          "expected_ids": ["chunk-sale-rule"],
+          "min_chunks": 2,
+          "metric": "long_term_retrieval_recall"
+        },
+        {
+          "kind": "memory_retention",
+          "markers": ["1005007651467330"],
+          "min_turns": 2,
+          "metric": "short_term_memory_retention"
+        }
+      ]
+    }
+  ]
+}

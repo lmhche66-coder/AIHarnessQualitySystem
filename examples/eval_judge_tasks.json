@@ -1,0 +1,20 @@
+{
+  "tasks": [
+    {
+      "metric": "task_completion",
+      "kind": "binary"
+    },
+    {
+      "metric": "tool_call_accuracy",
+      "kind": "multi_label",
+      "labels": [
+        "ledger_tool",
+        "echo_tool"
+      ]
+    },
+    {
+      "metric": "multi_turn_completion",
+      "kind": "binary"
+    }
+  ]
+}

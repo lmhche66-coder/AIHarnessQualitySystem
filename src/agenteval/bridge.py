@@ -24,13 +24,15 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, runtime_checkable
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from agenteval.case_context import current_case_context
 from agenteval.dialogue import Conversation, Role
 from agenteval.metrics import summarize_metrics
+from agenteval.modules import ModuleSignal, record_signal, record_usage
 from agenteval.models import CaseMetrics, Run, TokenUsage
 from agenteval.process import ToolCall, current_trace, record_tool_call
 from agenteval.redteam import Probe, ProbeOutcome
 from agenteval.selection import SelectionCall
-from agenteval.tools import ToolRegistry, ToolResult
+from agenteval.tools import ToolErrorKind, ToolRegistry, ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover - 仅用于类型标注
     from agenteval.models import TaskCase
@@ -65,6 +67,12 @@ class ToolCallRequest(BaseModel):
 
     name: str = Field(min_length=1)
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # agent 自带工具时，把「是否成功、错误类别、尝试次数、调用耗时」一并回报；
+    # 文章 §6.3 的工具节点要求写这几项。平台不重复执行，只记账。
+    ok: bool = True
+    error_kind: str | None = None
+    attempts: int = Field(default=1, ge=1)
+    duration_ms: float | None = None
 
 
 class BridgeMessage(BaseModel):
@@ -101,6 +109,8 @@ class BridgeResponse(BaseModel):
     protocol: str = PROTOCOL_VERSION
     output: str = ""
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
+    # agent 各模块节点上报的执行信号，写入当前用例轨迹供模块级断言使用
+    signals: list[ModuleSignal] = Field(default_factory=list)
     usage: TokenUsage | None = None
     error: str | None = None
 
@@ -234,7 +244,6 @@ class AgentSpec(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     cwd: str | None = None
     capabilities: list[str] = Field(default_factory=list)
-    tool_mode: Literal["platform", "agent"] = "platform"
     timeout_s: float = Field(default=DEFAULT_TIMEOUT_S, gt=0)
     max_steps: int = Field(default=DEFAULT_MAX_STEPS, ge=1)
 
@@ -308,6 +317,25 @@ def check_availability(spec: AgentSpec) -> tuple[bool, str]:
 # --------------------------------------------------------------------------- Bridge agent
 
 
+def agent_tool_result(call: ToolCallRequest) -> ToolResult:
+    """把 agent 回报的调用结果折成平台侧的结构化结果（调用已由 agent 执行）。"""
+
+    error_kind: ToolErrorKind | None = None
+    if not call.ok and call.error_kind:
+        try:
+            error_kind = ToolErrorKind(call.error_kind)
+        except ValueError:
+            error_kind = ToolErrorKind.UPSTREAM
+    elif not call.ok:
+        error_kind = ToolErrorKind.FAILED
+    return ToolResult(
+        ok=call.ok,
+        value={"executed_by": "agent"},
+        error_kind=error_kind,
+        attempts=call.attempts,
+    )
+
+
 def _describe_tools(registry: ToolRegistry) -> list[ToolDescriptor]:
     return [
         ToolDescriptor(name=name, input_schema=dict(registry.get(name).input_schema))
@@ -364,13 +392,6 @@ class BridgeAgent:
     def supports(self, capability: str) -> bool:
         return not self.spec.capabilities or capability in self.spec.capabilities
 
-    def _require_tool_mode(self, capability: str) -> None:
-        if self.spec.tool_mode != "platform":
-            raise BridgeError(
-                f"agent '{self.spec.id}' declares tool_mode={self.spec.tool_mode!r}, "
-                f"but {capability} requires the platform to execute tools"
-            )
-
     def invoke(
         self,
         capability: Capability,
@@ -393,11 +414,23 @@ class BridgeAgent:
             case=dict(case),
             tools=list(tools),
             messages=list(messages),
-            context=dict(context or {}),
+            context={**current_case_context(), **dict(context or {})},
         )
         response = self.transport().call(request, self.spec.timeout_s)
+        trace = current_trace()
         if response.usage is not None:
             self._accumulate(case_id or str(case.get("id", "")), response.usage)
+            # 文章 §6.4：多轮对话的用量逐轮累加——每次调用各写一条，便于审计
+            if trace is not None:
+                record_usage(
+                    trace,
+                    model_calls=response.usage.model_calls,
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                )
+        if trace is not None:
+            for signal in response.signals:
+                record_signal(trace, signal.module, signal.payload, signal.duration_ms)
         return response
 
     def _accumulate(self, case_id: str, usage: TokenUsage) -> None:
@@ -408,6 +441,7 @@ class BridgeAgent:
         self._usage[case_id] = TokenUsage(
             input_tokens=current.input_tokens + usage.input_tokens,
             output_tokens=current.output_tokens + usage.output_tokens,
+            model_calls=current.model_calls + usage.model_calls,
         )
 
     def apply_usage(self, run: Run) -> None:
@@ -424,6 +458,7 @@ class BridgeAgent:
                 update={
                     "input_tokens": metrics.input_tokens + usage.input_tokens,
                     "output_tokens": metrics.output_tokens + usage.output_tokens,
+                    "model_calls": metrics.model_calls + usage.model_calls,
                     "usage_reported": True,
                 }
             )
@@ -435,45 +470,13 @@ class BridgeAgent:
         metadata["app"] = self.spec.id
         metadata["app_version"] = self.spec.version
         metadata["app_transport"] = self.spec.transport
-        metadata["tool_mode"] = self.spec.tool_mode
 
     # ---------------------------------------------------------------- 能力适配
 
     def for_task(self) -> Callable[["ToolRegistry", "TaskCase"], None]:
-        if self.spec.tool_mode == "agent":
-            return self._task_with_agent_executed_tools()
+        """返回任务侧调用：工具属于 agent 自己，平台不派发、也不代执行。"""
 
-        def run(registry: ToolRegistry, task: "TaskCase") -> None:
-            self._require_tool_mode("task")
-            tools = _describe_tools(registry)
-            prompt = task.description or task.id
-            messages = [BridgeMessage(role="user", content=prompt)]
-            for _ in range(self.spec.max_steps):
-                response = self.invoke(
-                    "task", task.model_dump(mode="json"), tools, messages, task.id
-                )
-                if not response.tool_calls:
-                    return
-                messages.append(
-                    BridgeMessage(
-                        role="assistant",
-                        content=response.output,
-                        tool_calls=response.tool_calls,
-                    )
-                )
-                for call in response.tool_calls:
-                    try:
-                        result = registry.get(call.name).invoke(**call.arguments)
-                    except KeyError as exc:
-                        raise BridgeError(f"the agent requested an unknown tool: {exc}") from exc
-                    messages.append(
-                        BridgeMessage(role="tool", name=call.name, content=_tool_result_payload(result))
-                    )
-            raise BridgeError(
-                f"agent '{self.spec.id}' exceeded max_steps={self.spec.max_steps} without finishing"
-            )
-
-        return run
+        return self._task_with_agent_executed_tools()
 
     def _task_with_agent_executed_tools(self) -> Callable[["ToolRegistry", "TaskCase"], None]:
         """agent 自带工具：平台不执行任何工具，只把它回报的调用记进轨迹。
@@ -483,7 +486,7 @@ class BridgeAgent:
         """
 
         def run(registry: ToolRegistry, task: "TaskCase") -> None:
-            prompt = task.description or task.id
+            prompt = task.user_input or task.description or task.id
             response = self.invoke(
                 "task",
                 task.model_dump(mode="json"),
@@ -492,28 +495,34 @@ class BridgeAgent:
                 task.id,
             )
             trace = current_trace()
-            if trace is None:
-                return
-            for call in response.tool_calls:
-                record_tool_call(
-                    trace, call.name, call.arguments, ToolResult(ok=True, value={"executed_by": "agent"})
-                )
+            if trace is not None:
+                for call in response.tool_calls:
+                    record_tool_call(
+                        trace, call.name, call.arguments, agent_tool_result(call), call.duration_ms
+                    )
+            return response.output
 
         return run
 
     def for_dialogue(self) -> Callable[[ToolRegistry, Conversation], str]:
+        """返回对话侧调用：同样由 agent 自带工具，平台只记账。"""
+
+        return self._dialogue_with_agent_executed_tools()
+
+    def _dialogue_with_agent_executed_tools(self) -> Callable[[ToolRegistry, Conversation], str]:
+        """多轮对话：agent 自带工具，平台不派发工具、只记录它回报的调用。"""
+
         def respond(registry: ToolRegistry, conversation: Conversation) -> str:
-            self._require_tool_mode("dialogue")
-            tools = _describe_tools(registry)
             messages = _conversation_messages(conversation)
             response = self.invoke(
-                "dialogue", {"id": conversation.id}, tools, messages, conversation.id
+                "dialogue", {"id": conversation.id}, (), messages, conversation.id
             )
-            for call in response.tool_calls:
-                try:
-                    registry.get(call.name).invoke(**call.arguments)
-                except KeyError as exc:
-                    raise BridgeError(f"the agent requested an unknown tool: {exc}") from exc
+            trace = current_trace()
+            if trace is not None:
+                for call in response.tool_calls:
+                    record_tool_call(
+                        trace, call.name, call.arguments, agent_tool_result(call), call.duration_ms
+                    )
             return response.output
 
         return respond

@@ -1,0 +1,29 @@
+{
+  "cases": [
+    {
+      "id": "self-task",
+      "kind": "task",
+      "scene": "端到端任务",
+      "user_input": "帮我把 30 元扣款并结算。",
+      "expected_output": "已扣款 30 元并完成结算，账本余额 30 元。",
+      "expected": { "task_completion": "pass", "tool_call_accuracy": ["ledger_tool"] },
+      "checks": [
+        { "kind": "tool_sequence", "expected": ["ledger_tool", "ledger_tool"], "mode": "subsequence", "metric": "task_completion" },
+        { "kind": "no_extra_calls", "allowed": ["ledger_tool"], "metric": "tool_call_accuracy" }
+      ]
+    },
+    {
+      "id": "self-dialogue",
+      "kind": "dialogue",
+      "scene": "多轮对话",
+      "user_input": "订单 12345 一直没支付成功，帮我看看。",
+      "expected_output": "确认支付网关超时并收尾。",
+      "expected": { "multi_turn_completion": "pass" },
+      "script": ["订单 12345 一直没支付成功，帮我看看。"],
+      "max_turns": 2,
+      "checks": [
+        { "kind": "termination", "marker": "已确认", "metric": "multi_turn_completion" }
+      ]
+    }
+  ]
+}

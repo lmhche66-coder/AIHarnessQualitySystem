@@ -23,6 +23,7 @@ REPORT_SUFFIX = ".json"
 KIND_GATE = "gate"
 KIND_TRIAGE = "triage"
 KIND_JUDGE = "judge"
+KIND_REPORT = "report"
 
 
 class ConclusionRecord(BaseModel):

@@ -1,0 +1,11 @@
+{
+  "cases": [
+    {
+      "id": "task-knowledge-qa-route-miss",
+      "metrics": ["faithfulness"],
+      "expected_route": "skill_hit",
+      "output": "商品 1005007651467330 在韩国不可售，原因是 sale_country_rule 命中黑名单。",
+      "expected": { "faithfulness": "pass" }
+    }
+  ]
+}

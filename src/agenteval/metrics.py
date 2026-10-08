@@ -27,6 +27,7 @@ class RunMetrics(BaseModel):
     duration_p95_ms: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    model_calls: int = 0
     usage_reported: bool = False
     budget_violations: list[str] = Field(default_factory=list)
     percentile_method: str = PERCENTILE_METHOD
@@ -55,6 +56,7 @@ def summarize_metrics(verdicts: Sequence[Verdict]) -> RunMetrics:
         duration_p95_ms=percentile(durations, 0.95),
         input_tokens=sum(verdict.metrics.input_tokens for verdict in verdicts),
         output_tokens=sum(verdict.metrics.output_tokens for verdict in verdicts),
+        model_calls=sum(verdict.metrics.model_calls for verdict in verdicts),
         usage_reported=any(verdict.metrics.usage_reported for verdict in verdicts),
         budget_violations=sorted(
             {

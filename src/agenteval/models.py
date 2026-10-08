@@ -27,6 +27,8 @@ class ContractCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: str
+    # 指标归口：同一指标可由多条断言共同支撑，记分卡按该字段聚合。缺省时按断言名归口。
+    metric: str | None = None
 
 
 class MissingRequiredCheck(ContractCheck):
@@ -87,7 +89,30 @@ ContractCheckSpec = Annotated[
 ]
 
 
-class Case(BaseModel):
+class CaseAnnotations(BaseModel):
+    """用例的评测归属标注。
+
+    这些字段不参与执行，只用于按场景与数据集聚合结果；缺省时归入 ``unknown``，
+    既有的未标注用例无需改动即可继续运行。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene: str | None = None
+    dataset_type: str | None = None
+    # 文章 §6.1 步骤 2：用例要带用户输入、期望输出与 Mock 数据
+    user_input: str | None = None
+    # 会话标识；缺省时引擎用 case id 兜底
+    session_id: str | None = None
+    expected_output: str | None = None
+    mock: dict[str, Any] | None = None
+    # 逐指标的期望，交给裁判；键是指标标识
+    expected: dict[str, Any] = Field(default_factory=dict)
+    # 期望的路由方向，用于从轨迹判定上游路由是否误触发
+    expected_route: str | None = None
+
+
+class Case(CaseAnnotations):
     """一条评测用例。"""
 
     model_config = ConfigDict(extra="forbid")
@@ -106,6 +131,7 @@ class ProcessCheck(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     kind: str
+    metric: str | None = None
 
 
 class ToolSequenceCheck(ProcessCheck):
@@ -149,6 +175,47 @@ class BudgetCheck(ProcessCheck):
     max_duration_ms: float | None = Field(default=None, ge=0)
 
 
+class IntentMatchCheck(ProcessCheck):
+    """感知模块：断言识别出的意图与 Skill 命中是否与期望一致。"""
+
+    kind: Literal["intent_match"] = "intent_match"
+    expected_intent: str = ""
+    expected_skill: str = ""
+    # 为真时意图或 Skill 任一命中即通过；为假时要求同时命中已声明的项。
+    accept_any: bool = False
+
+
+class RouteDecisionCheck(ProcessCheck):
+    """规划模块：断言路由决策方向，并可一并断言选中的工具。"""
+
+    kind: Literal["route_decision"] = "route_decision"
+    expected_route: str = ""
+    expected_tools: list[str] = Field(default_factory=list)
+
+
+class ToolDecisionCheck(ProcessCheck):
+    """规划模块：断言 Agent 决定调用的工具集合。"""
+
+    kind: Literal["tool_decision"] = "tool_decision"
+    expected_tools: list[str] = Field(default_factory=list)
+
+
+class MemoryRetentionCheck(ProcessCheck):
+    """记忆模块：断言短期记忆注入是否保留了前文信息。"""
+
+    kind: Literal["memory_retention"] = "memory_retention"
+    markers: list[str] = Field(default_factory=list)
+    min_turns: int | None = Field(default=None, ge=0)
+
+
+class RetrievalHitCheck(ProcessCheck):
+    """记忆模块：断言长期记忆检索是否召回期望的片段。"""
+
+    kind: Literal["retrieval_hit"] = "retrieval_hit"
+    expected_ids: list[str] = Field(default_factory=list)
+    min_chunks: int | None = Field(default=None, ge=0)
+
+
 ProcessCheckSpec = Annotated[
     Union[
         ToolSequenceCheck,
@@ -156,6 +223,11 @@ ProcessCheckSpec = Annotated[
         RecoveryCheck,
         StateContinuityCheck,
         BudgetCheck,
+        IntentMatchCheck,
+        RouteDecisionCheck,
+        ToolDecisionCheck,
+        MemoryRetentionCheck,
+        RetrievalHitCheck,
     ],
     Field(discriminator="kind"),
 ]
@@ -170,7 +242,7 @@ class ProcessStep(BaseModel):
     input: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProcessCase(BaseModel):
+class ProcessCase(CaseAnnotations):
     """一条过程用例：执行声明的步骤，再对轨迹做过程断言。"""
 
     model_config = ConfigDict(extra="forbid")
@@ -192,6 +264,7 @@ class FinalStateCheck(BaseModel):
     tool: str = ""
     field: str = ""
     expected: Any = None
+    metric: str | None = None
 
 
 TaskCheckSpec = Annotated[
@@ -202,12 +275,17 @@ TaskCheckSpec = Annotated[
         StateContinuityCheck,
         BudgetCheck,
         FinalStateCheck,
+        IntentMatchCheck,
+        RouteDecisionCheck,
+        ToolDecisionCheck,
+        MemoryRetentionCheck,
+        RetrievalHitCheck,
     ],
     Field(discriminator="kind"),
 ]
 
 
-class TaskCase(BaseModel):
+class TaskCase(CaseAnnotations):
     """一条端到端任务：在干净环境里由 agent 尝试完成，再按判据判定是否解决。"""
 
     model_config = ConfigDict(extra="forbid")
@@ -243,12 +321,17 @@ DialogueCheckSpec = Annotated[
         BudgetCheck,
         RequiredClarificationCheck,
         TerminationCheck,
+        IntentMatchCheck,
+        RouteDecisionCheck,
+        ToolDecisionCheck,
+        MemoryRetentionCheck,
+        RetrievalHitCheck,
     ],
     Field(discriminator="kind"),
 ]
 
 
-class DialogueCase(BaseModel):
+class DialogueCase(CaseAnnotations):
     """一条多轮对话用例：平台驱动循环，agent 只负责一轮。"""
 
     model_config = ConfigDict(extra="forbid")
@@ -284,6 +367,10 @@ class CheckOutcome(BaseModel):
     expected: Any = None
     actual: Any = None
     message: str | None = None
+    # 该断言支撑的指标标识；缺省时记分卡回退到断言名。
+    metric: str | None = None
+    # 上游错误导致本断言没有执行机会时置为真：既不计入分子也不计入分母。
+    skipped: bool = False
 
 
 class TokenUsage(BaseModel):
@@ -293,6 +380,8 @@ class TokenUsage(BaseModel):
 
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
+    # 模型调用次数：文章 §6.3 要求采集，agent 未上报时保持 0，不臆造
+    model_calls: int = Field(default=0, ge=0)
 
 
 class CaseMetrics(BaseModel):
@@ -305,6 +394,7 @@ class CaseMetrics(BaseModel):
     duration_ms: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    model_calls: int = 0
     usage_reported: bool = False
 
 
@@ -315,6 +405,10 @@ class Verdict(BaseModel):
 
     case_id: str
     status: Status
+    # 被测 agent 的最终输出；裁判需要「输出 + 轨迹」一起看
+    output: str | None = None
+    scene: str | None = None
+    dataset_type: str | None = None
     checks: list[CheckOutcome] = Field(default_factory=list)
     error: str | None = None
     duration_ms: float = 0.0
@@ -322,7 +416,7 @@ class Verdict(BaseModel):
 
     @property
     def failed_checks(self) -> list[CheckOutcome]:
-        return [check for check in self.checks if not check.passed]
+        return [check for check in self.checks if not check.passed and not check.skipped]
 
 
 class TraceEvent(BaseModel):

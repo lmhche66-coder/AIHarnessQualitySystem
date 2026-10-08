@@ -202,9 +202,6 @@ def test_undeclared_capability_is_rejected() -> None:
         bridge.invoke("selection", {"id": "c1"})
 
 
-def test_task_accepts_the_agent_tool_mode() -> None:
-    bridge = BridgeAgent(spec(tool_mode="agent"))
-    assert callable(bridge.for_task())
 
 
 def test_task_in_agent_mode_records_agent_executed_calls() -> None:
@@ -216,7 +213,6 @@ def test_task_in_agent_mode_records_agent_executed_calls() -> None:
                 "tool_calls": [{"name": "ledger_tool", "arguments": {"op": "settle"}}],
             }
         ),
-        tool_mode="agent",
     )
     task = TaskCase.model_validate(
         {
@@ -240,20 +236,158 @@ def test_task_in_agent_mode_records_agent_executed_calls() -> None:
     assert calls == ["ledger_tool"]
 
 
-def test_loop_exceeding_max_steps_fails() -> None:
-    looping = spec(
-        args=_script(
-            {
-                "protocol": PROTOCOL_VERSION,
-                "tool_calls": [{"name": "ledger_tool", "arguments": {"op": "settle"}}],
-            }
-        ),
-        max_steps=3,
+
+
+def test_multi_turn_usage_is_recorded_per_turn() -> None:
+    """文章 §6.4：多轮对话的成本指标逐轮累加，轨迹里每轮各一条。"""
+
+    from agenteval.bridge import BridgeResponse
+    from agenteval.dialogue import DialogueRunner
+    from agenteval.models import DialogueCase, TokenUsage
+
+    class StubTransport:
+        def call(self, request, timeout):
+            return BridgeResponse(
+                output="已确认",
+                usage=TokenUsage(input_tokens=80, output_tokens=20, model_calls=1),
+            )
+
+    agent = BridgeAgent(spec(capabilities=["dialogue"]))
+    agent.transport = lambda: StubTransport()  # type: ignore[method-assign]
+    case = DialogueCase(
+        id="d",
+        script=["第一轮", "第二轮"],
+        max_turns=3,
+        checks=[{"kind": "termination", "marker": "已确认"}],
     )
-    bridge = BridgeAgent(looping)
-    task = load_tasks(TASKS)[0]
-    with pytest.raises(BridgeError, match="max_steps"):
-        bridge.for_task()(build_task_registry(), task)
+    runner = DialogueRunner(
+        agent=agent.for_dialogue(), environment=build_demo_registry, turn_settle_s=0.0
+    )
+    _verdict, trace, conversation = runner.run_case(case)
+
+    usages = [event.payload for event in trace.events if event.name == "model.usage"]
+    assert len(usages) == 2  # 逐轮各一条
+    assert all(item["input_tokens"] == 80 for item in usages)
+    assert len(conversation.agent_turns()) == 2
+
+
+def test_agent_mode_reports_failure_and_duration() -> None:
+    """agent 自带工具时，成败、错误类别与耗时都随调用回报给平台。"""
+
+    from agenteval.bridge import BridgeResponse, ToolCallRequest
+    from agenteval.models import Trace
+    from agenteval.process import TraceSession, extract_tool_calls
+
+    class StubTransport:
+        def call(self, request, timeout):
+            return BridgeResponse(
+                output="done",
+                tool_calls=[
+                    ToolCallRequest(
+                        name="echo_tool",
+                        arguments={},
+                        ok=False,
+                        error_kind="timeout",
+                        duration_ms=42.0,
+                    )
+                ],
+            )
+
+    agent = BridgeAgent(spec(capabilities=["task"]))
+    agent.transport = lambda: StubTransport()  # type: ignore[method-assign]
+
+    session = TraceSession()
+    trace = Trace(case_id="c1")
+    session.begin_case(trace)
+    try:
+        agent.for_task()(build_task_registry(), load_tasks(TASKS)[0])
+    finally:
+        session.end_case()
+
+    call = extract_tool_calls(trace)[0]
+    assert call.ok is False
+    assert call.error_kind == "timeout"
+    assert call.duration_ms == 42.0
+
+
+def test_dialogue_agent_mode_records_reported_calls() -> None:
+    """agent 自带工具：平台不派发工具，只记录 agent 回报的调用。"""
+
+    from agenteval.bridge import BridgeResponse, ToolCallRequest
+    from agenteval.dialogue import Conversation
+    from agenteval.models import Trace
+    from agenteval.process import TraceSession, extract_tool_calls
+    from agenteval.tools import ToolRegistry
+
+    class StubTransport:
+        def call(self, request, timeout):
+            assert request.tools == []  # 平台没有给工具
+            return BridgeResponse(
+                output="已确认",
+                tool_calls=[ToolCallRequest(name="echo_tool", arguments={"message": "x"})],
+            )
+
+    agent = BridgeAgent(spec(capabilities=["dialogue"]))
+    agent.transport = lambda: StubTransport()  # type: ignore[method-assign]
+    respond = agent.for_dialogue()
+
+    session = TraceSession()
+    trace = Trace(case_id="c1")
+    session.begin_case(trace)
+    try:
+        output = respond(ToolRegistry([]), Conversation(id="c1"))
+    finally:
+        session.end_case()
+
+    assert output == "已确认"
+    assert [call.target for call in extract_tool_calls(trace)] == ["echo_tool"]
+
+
+# --------------------------------------------------------------------------- 构造输入
+
+
+def test_case_context_is_injected_into_the_request() -> None:
+    """文章 §6.1 步骤 4a：sessionId 与 Mock 数据随请求注入。"""
+
+    from agenteval.bridge import BridgeResponse
+    from agenteval.case_context import case_context
+
+    captured: dict = {}
+
+    class StubTransport:
+        def call(self, request, timeout):
+            captured["request"] = request
+            return BridgeResponse(output="ok")
+
+    agent = BridgeAgent(spec(capabilities=["task"]))
+    agent.transport = lambda: StubTransport()  # type: ignore[method-assign]
+    with case_context(session_id="s-1", mock={"balance": 30}):
+        agent.invoke("task", {"id": "t1"})
+
+    assert captured["request"].context == {"session_id": "s-1", "mock": {"balance": 30}}
+
+
+def test_task_prompt_prefers_user_input() -> None:
+    """用例声明的 user_input 应当作为给 agent 的用户输入。"""
+
+    from agenteval.bridge import BridgeResponse
+
+    captured: dict = {}
+
+    class StubTransport:
+        def call(self, request, timeout):
+            captured["request"] = request
+            return BridgeResponse(output="完成")
+
+    agent = BridgeAgent(spec(capabilities=["task"]))
+    agent.transport = lambda: StubTransport()  # type: ignore[method-assign]
+    task = load_tasks(TASKS)[0].model_copy(
+        update={"user_input": "帮我把 30 元扣款并结算"}
+    )
+    agent.for_task()(build_task_registry(), task)
+
+    messages = captured["request"].messages
+    assert messages[0].content == "帮我把 30 元扣款并结算"
 
 
 # --------------------------------------------------------------------------- 四类能力
@@ -307,7 +441,7 @@ def test_selection_runs_over_an_http_bridge(http_endpoint: str) -> None:
 
 def test_selection_bridge_detects_a_wrong_tool() -> None:
     spec_ = spec(
-        id="rogue-agent", args=[str(ROGUE)], capabilities=["selection"], tool_mode="agent"
+        id="rogue-agent", args=[str(ROGUE)], capabilities=["selection"]
     )
     bridge = BridgeAgent(spec_)
     cases = load_selection_cases(SELECTION_CASES)

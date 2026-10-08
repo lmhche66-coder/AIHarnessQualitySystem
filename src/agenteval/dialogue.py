@@ -19,6 +19,7 @@ from typing import Any, Protocol
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
+from agenteval.case_context import case_context
 from agenteval.models import (
     CaseMetrics,
     CheckOutcome,
@@ -184,6 +185,7 @@ def evaluate_dialogue(
     outcomes = [
         CheckOutcome(
             name="dialogue.max_turns",
+            metric="multi_turn_completion",
             passed=ended_naturally,
             expected=f"the simulator finishes within {case.max_turns} agent turns",
             actual=len(agent_turns),
@@ -198,13 +200,13 @@ def evaluate_dialogue(
     for spec in case.checks:
         handler = process_handler(spec.kind)
         if handler is not None:
-            outcomes.extend(handler(spec, calls, trace))
+            produced = handler(spec, calls, trace)
         elif spec.kind == "required_clarification":
-            outcomes.append(_check_clarification(spec, agent_turns))
+            produced = [_check_clarification(spec, agent_turns)]
         elif spec.kind == "termination":
-            outcomes.append(_check_termination(spec, agent_turns))
+            produced = [_check_termination(spec, agent_turns)]
         else:
-            outcomes.append(
+            produced = [
                 CheckOutcome(
                     name=f"{spec.kind}.unsupported",
                     passed=False,
@@ -212,7 +214,14 @@ def evaluate_dialogue(
                     actual=spec.kind,
                     message="unsupported dialogue check",
                 )
-            )
+            ]
+        # 把对话检查声明的指标标识补写到尚未归口的断言上
+        metric = getattr(spec, "metric", None)
+        if metric:
+            for outcome in produced:
+                if outcome.metric is None:
+                    outcome.metric = metric
+        outcomes.extend(produced)
     return outcomes
 
 
@@ -225,6 +234,9 @@ class DialogueRunner:
     simulator: UserSimulator | None = None
     store: RunStore | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # 文章 §6.4：每轮结束后等待会话持久化，再发起下一轮。0 表示不等待。
+    turn_settle_s: float = 0.0
+    eval_mode: str | None = None
 
     def _respond(self, registry: ToolRegistry, conversation: Conversation) -> str:
         respond = getattr(self.agent, "respond", None)
@@ -243,20 +255,29 @@ class DialogueRunner:
         ended_naturally = False
         try:
             registry = wrap_registry_for_trace(self.environment(), session)
-            for _ in range(case.max_turns):
-                message = simulator.respond(case, conversation)
-                if message is None:
-                    ended_naturally = True
-                    break
-                conversation.turns.append(Turn(role=Role.USER, content=message))
-                before = len(trace.events)
-                reply = self._respond(registry, conversation)
-                turn_calls = extract_tool_calls(
-                    Trace(case_id=case.id, events=list(trace.events[before:]))
-                )
-                conversation.turns.append(
-                    Turn(role=Role.AGENT, content=reply or "", calls=turn_calls)
-                )
+            # 文章 §6.1 步骤 4a：多轮共享同一个 sessionId，并注入 Mock 数据
+            with case_context(
+                session_id=case.session_id or case.id,
+                mock=case.mock,
+                eval_mode=self.eval_mode,
+            ):
+                for _ in range(case.max_turns):
+                    message = simulator.respond(case, conversation)
+                    if message is None:
+                        ended_naturally = True
+                        break
+                    conversation.turns.append(Turn(role=Role.USER, content=message))
+                    before = len(trace.events)
+                    reply = self._respond(registry, conversation)
+                    turn_calls = extract_tool_calls(
+                        Trace(case_id=case.id, events=list(trace.events[before:]))
+                    )
+                    conversation.turns.append(
+                        Turn(role=Role.AGENT, content=reply or "", calls=turn_calls)
+                    )
+                    if self.turn_settle_s > 0:
+                        # 等待会话持久化完成，避免下一轮读不到上一轮历史
+                        time.sleep(self.turn_settle_s)
         except Exception as exc:  # noqa: BLE001 - 单条用例失败不终止整轮运行
             error = f"{type(exc).__name__}: {exc}"
         finally:
@@ -265,12 +286,21 @@ class DialogueRunner:
         duration_ms = round((time.perf_counter() - started) * 1000, 3)
         if error is not None:
             verdict = Verdict(case_id=case.id, status=Status.ERROR, error=error)
+            verdict.scene = case.scene
+            verdict.dataset_type = case.dataset_type
             verdict.duration_ms = duration_ms
             return verdict, trace, conversation
 
         checks = evaluate_dialogue(case, conversation, trace, ended_naturally)
         status = Status.PASS if all(check.passed for check in checks) else Status.FAIL
-        verdict = Verdict(case_id=case.id, status=status, checks=checks)
+        verdict = Verdict(
+            case_id=case.id,
+            status=status,
+            checks=checks,
+            output="\n".join(turn.content for turn in conversation.agent_turns()) or None,
+        )
+        verdict.scene = case.scene
+        verdict.dataset_type = case.dataset_type
         verdict.duration_ms = duration_ms
         verdict.metrics = CaseMetrics(
             calls=len(extract_tool_calls(trace)),

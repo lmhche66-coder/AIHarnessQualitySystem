@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -116,6 +118,8 @@ class ContractRunner:
                 if override is not None:
                     trace = override
                 verdict = self._evaluate(case, trace, override)
+            verdict.scene = getattr(case, "scene", None)
+            verdict.dataset_type = getattr(case, "dataset_type", None)
         finally:
             if session is not None:
                 session.end_case()
@@ -244,24 +248,64 @@ class ContractRunner:
         cases: Iterable[AnyCase],
         metadata: dict[str, Any] | None = None,
         run_id: str | None = None,
+        *,
+        concurrency: int = 1,
+        timeout_s: float | None = None,
+        retries: int = 0,
+        retry_interval_s: float = 0.0,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> Run:
-        """执行一批用例，计算汇总，并按需落盘。"""
+        """执行一批用例，计算汇总，并按需落盘。
 
+        执行控制（并发、单条超时、重试、取消）由模块级 ``execute_cases`` 提供，
+        与任务、对话两类用例共用同一套编排；cassette 会话是有状态的，因此使用
+        cassette 时并发被强制回退到 1。
+        """
+
+        case_list = list(cases)
         merged_metadata = dict(self.metadata)
         merged_metadata.update(metadata or {})
         if self.trace_name is not None:
             merged_metadata.setdefault("trace_name", self.trace_name)
         if self._used_traces:
             merged_metadata["trace_names"] = sorted(set(self._used_traces))
+        if self.cassette_session is not None and concurrency > 1:
+            concurrency = 1
+        engine: dict[str, Any] = {
+            "concurrency": concurrency,
+            "timeout_s": timeout_s,
+            "retries": retries,
+            "retry_interval_s": retry_interval_s,
+            "cases": len(case_list),
+        }
+        merged_metadata["engine"] = engine
+
         run = Run(
             run_id=run_id or new_run_id(),
             started_at=datetime.now(timezone.utc),
             metadata=merged_metadata,
         )
-        for case in cases:
-            verdict, trace = self.run_case(case)
+
+        items = [(case.id, case) for case in case_list]
+        results, cancelled = execute_cases(
+            items,
+            self.run_case,
+            concurrency=concurrency,
+            timeout_s=timeout_s,
+            retries=retries,
+            retry_interval_s=retry_interval_s,
+            cancel_check=cancel_check,
+        )
+        attempts: dict[str, int] = {}
+        for case_id, (verdict, trace, tries) in zip([item[0] for item in items], results):
             run.verdicts.append(verdict)
-            run.traces.append(trace)
+            if trace is not None:
+                run.traces.append(trace)
+            attempts[case_id] = tries
+        engine["attempts"] = attempts
+        if cancelled:
+            engine["cancelled"] = True
+
         if self.cassette_session is not None:
             report = self.cassette_session.finish()
             run.metadata["cassette"] = report
@@ -291,3 +335,117 @@ class ContractRunner:
         if self.store is not None:
             self.store.save(run)
         return run
+
+
+# 执行控制：并发、单条超时、仅对执行异常重试、用例边界取消。契约/过程、任务、
+# 对话三类用例共用同一套编排，因此放在模块级，由各 runner 复用。
+
+RunCase = Callable[[AnyCase], tuple[Verdict, Trace]]
+
+
+def _with_retries(
+    case_id: str,
+    run_one: Callable[[], tuple[Verdict, Trace | None]],
+    retries: int,
+    retry_interval_s: float,
+) -> tuple[Verdict, Trace | None, int]:
+    """只对执行异常（error）重试；判定不通过（fail）不重试（文章 §6.6）。"""
+
+    verdict, trace = run_one()
+    tries = 1
+    while tries <= retries and verdict.status is Status.ERROR:
+        if retry_interval_s > 0:
+            time.sleep(retry_interval_s)
+        verdict, trace = run_one()
+        tries += 1
+    return verdict, trace, tries
+
+
+def _with_timeout(
+    case_id: str,
+    run_one: Callable[[], tuple[Verdict, Trace | None]],
+    timeout_s: float | None,
+    retries: int,
+    retry_interval_s: float,
+) -> tuple[Verdict, Trace | None, int]:
+    """单条用例的等待上限；超过则判为 error 并放弃等待，不阻塞其余用例。"""
+
+    if timeout_s is None:
+        return _with_retries(case_id, run_one, retries, retry_interval_s)
+    pool = ThreadPoolExecutor(max_workers=1)
+    future = pool.submit(_with_retries, case_id, run_one, retries, retry_interval_s)
+    try:
+        result = future.result(timeout=timeout_s)
+    except FuturesTimeout:
+        pool.shutdown(wait=False, cancel_futures=True)
+        return (
+            Verdict(
+                case_id=case_id,
+                status=Status.ERROR,
+                error=f"case timed out after {timeout_s}s",
+            ),
+            None,
+            1,
+        )
+    pool.shutdown(wait=True)
+    return result
+
+
+def execute_cases(
+    items: Sequence[tuple[str, Any]],
+    run_case: Callable[[Any], tuple[Verdict, Trace | None]],
+    *,
+    concurrency: int = 1,
+    timeout_s: float | None = None,
+    retries: int = 0,
+    retry_interval_s: float = 0.0,
+    cancel_check: Callable[[], bool] | None = None,
+) -> tuple[list[tuple[Verdict, Trace | None, int]], bool]:
+    """按执行控制跑一批 ``(case_id, item)``，返回 ``(结果, 是否被取消)``。
+
+    结果与输入同序。``run_case`` 把 item 跑成 ``(Verdict, Trace)``；重试只针对
+    ``error``，取消在用例边界生效。
+    """
+
+    item_list = list(items)
+    results: dict[int, tuple[Verdict, Trace | None, int]] = {}
+    cancelled = False
+
+    def guarded(index: int) -> tuple[Verdict, Trace | None, int]:
+        case_id, item = item_list[index]
+        try:
+            return _with_timeout(
+                case_id, lambda: run_case(item), timeout_s, retries, retry_interval_s
+            )
+        except Exception as exc:  # noqa: BLE001 - 单条用例失败不终止整轮
+            return (
+                Verdict(
+                    case_id=case_id,
+                    status=Status.ERROR,
+                    error=f"{type(exc).__name__}: {exc}",
+                ),
+                None,
+                1,
+            )
+
+    if concurrency <= 1:
+        for index in range(len(item_list)):
+            if cancel_check is not None and cancel_check():
+                cancelled = True
+                break
+            results[index] = guarded(index)
+    elif cancel_check is not None and cancel_check():
+        return [], True
+    else:
+        pool = ThreadPoolExecutor(max_workers=max(1, concurrency))
+        futures = {pool.submit(guarded, index): index for index in range(len(item_list))}
+        try:
+            for future in futures:
+                index = futures[future]
+                # _with_timeout 已保证单条用例不会无限等待，这里不再叠加超时
+                results[index] = future.result()
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    ordered = [results[index] for index in sorted(results)]
+    return ordered, cancelled

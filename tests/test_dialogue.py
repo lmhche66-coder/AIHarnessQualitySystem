@@ -47,6 +47,24 @@ def runner(agent: object, **kwargs: object) -> DialogueRunner:
 # --------------------------------------------------------------------------- 模型
 
 
+def test_dialogue_checks_carry_declared_metric() -> None:
+    """对话检查声明的指标应写到判定上，供记分卡按指标归口。"""
+
+    from agenteval.dialogue import DialogueRunner, evaluate_dialogue
+    from agenteval.models import DialogueCase, Trace
+
+    case = DialogueCase(
+        id="d",
+        script=["你好"],
+        checks=[{"kind": "termination", "marker": "已确认", "metric": "multi_turn_completion"}],
+    )
+    conversation = __import__("agenteval.dialogue", fromlist=["Conversation"]).Conversation(id="d")
+    outcomes = evaluate_dialogue(case, conversation, Trace(case_id="d"), ended_naturally=True)
+    by_name = {outcome.name: outcome for outcome in outcomes}
+    assert by_name["dialogue.max_turns"].metric == "multi_turn_completion"
+    assert by_name["dialogue.termination"].metric == "multi_turn_completion"
+
+
 def test_dialogue_case_requires_script_and_checks() -> None:
     with pytest.raises(ValueError, match="scripted user message"):
         DialogueCase.model_validate({"id": "d", "checks": [{"kind": "termination"}]})

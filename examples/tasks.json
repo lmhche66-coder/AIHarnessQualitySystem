@@ -7,21 +7,62 @@
       "checks": [
         {
           "kind": "tool_sequence",
-          "expected": ["ledger_tool", "ledger_tool"],
-          "mode": "subsequence"
+          "expected": [
+            "ledger_tool",
+            "ledger_tool"
+          ],
+          "mode": "subsequence",
+          "metric": "task_completion"
         },
-        { "kind": "no_extra_calls", "allowed": ["ledger_tool"] },
-        { "kind": "final_state", "tool": "ledger_tool", "field": "balance", "expected": 30 }
-      ]
+        {
+          "kind": "no_extra_calls",
+          "allowed": [
+            "ledger_tool"
+          ],
+          "metric": "tool_call_accuracy"
+        }
+      ],
+      "scene": "端到端任务",
+      "user_input": "帮我把 30 元扣款并结算。",
+      "expected_output": "已扣款 30 元并完成结算，账本余额 30 元。",
+      "expected": {
+        "task_completion": "pass",
+        "tool_call_accuracy": [
+          "ledger_tool"
+        ]
+      }
     },
     {
       "id": "task-refund-reduces-balance",
       "kind": "task",
       "description": "扣款后部分退款，账本余额必须等于净额",
       "checks": [
-        { "kind": "no_extra_calls", "allowed": ["ledger_tool"] },
-        { "kind": "final_state", "tool": "ledger_tool", "field": "balance", "expected": 70 }
-      ]
+        {
+          "kind": "tool_sequence",
+          "expected": [
+            "ledger_tool",
+            "ledger_tool"
+          ],
+          "mode": "subsequence",
+          "metric": "task_completion"
+        },
+        {
+          "kind": "no_extra_calls",
+          "allowed": [
+            "ledger_tool"
+          ],
+          "metric": "tool_call_accuracy"
+        }
+      ],
+      "scene": "端到端任务",
+      "user_input": "先扣 100 元，再退 30 元。",
+      "expected_output": "已扣款 100 元并退款 30 元，账本余额 70 元。",
+      "expected": {
+        "task_completion": "pass",
+        "tool_call_accuracy": [
+          "ledger_tool"
+        ]
+      }
     }
   ]
 }

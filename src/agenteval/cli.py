@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -45,15 +45,43 @@ from agenteval.judge import (
     format_report as format_judge_report,
     load_gold_set,
 )
+from agenteval.judge_tasks import (
+    build_tasks as build_judge_tasks,
+    evidence_from_trace,
+    format_run as format_judge_task_run,
+    load_cases as load_judge_cases,
+    load_task_specs,
+    run_tasks as run_judge_tasks,
+)
+from agenteval.jobs import (
+    DEFAULT_CONCURRENCY as DEFAULT_EVAL_CONCURRENCY,
+    JobRecord,
+    JobStatus,
+    JobStore,
+    new_job_id,
+    spawn_worker,
+)
+from agenteval.engine import (
+    DatasetRegistry,
+    AgentEvalRunner,
+    assemble_cases,
+    EvalMode,
+    format_plan,
+    plan_evaluation,
+    run_plan,
+)
 from agenteval.load import load_scenarios, run_scenarios
 from agenteval.reports import (
     KIND_GATE,
     KIND_JUDGE,
+    KIND_REPORT,
     KIND_TRIAGE,
     ConclusionStore,
     write_conclusion,
 )
 from agenteval.reports import REPORTS_DIRNAME
+from agenteval.profiles import EvalScope
+from agenteval.scorecard import build_scorecard, format_scorecard
 from agenteval.otel import ExportError, export_run
 from agenteval.redteam import RedTeamRunner, load_probes
 from agenteval.dialogue import DialogueRunner, load_dialogue_cases
@@ -83,6 +111,9 @@ from agenteval.selection import (
 )
 from agenteval.models import Run
 from agenteval.models import AnyCase
+from agenteval.models import Status
+from agenteval.models import CheckOutcome, Verdict
+from agenteval.models import DialogueCase, TaskCase
 from agenteval.runner import ContractRunner, load_cases
 from agenteval.store import RUNS_DIRNAME, RunStore
 from agenteval.tasks import TaskRunner, load_tasks
@@ -153,6 +184,18 @@ def build_parser() -> argparse.ArgumentParser:
     show_parser = subparsers.add_parser("show", help="show a stored run")
     show_parser.add_argument("run_id")
     show_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help="build a quality x cost x performance scorecard for a stored run",
+    )
+    report_parser.add_argument("--run", dest="run_id", help="run id (default: latest)")
+    report_parser.add_argument(
+        "--scope",
+        choices=[scope.value for scope in EvalScope],
+        help="evaluation scope (default: run metadata, else end_to_end)",
+    )
+    report_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
 
     baseline_parser = subparsers.add_parser(
         "baseline", help="capture a stored run as the gate baseline"
@@ -257,6 +300,138 @@ def build_parser() -> argparse.ArgumentParser:
     judge_calibrate_parser.add_argument("--max-length-bias", type=float, default=0.8)
     judge_calibrate_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
 
+    judge_task_parser = judge_subparsers.add_parser(
+        "task", help="run structured judge tasks over annotated cases"
+    )
+    judge_task_parser.add_argument(
+        "--cases", type=Path, required=True, help="judge cases (JSON or YAML)"
+    )
+    judge_task_parser.add_argument(
+        "--judge", required=True, help="judge factory as 'package.module:factory'"
+    )
+    judge_task_parser.add_argument(
+        "--tasks",
+        type=Path,
+        help="optional task spec file declaring labels, fields and score thresholds",
+    )
+    judge_task_parser.add_argument(
+        "--run",
+        help="attach trace evidence from a stored run (case ids must match)",
+    )
+    judge_task_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    eval_parser = subparsers.add_parser(
+        "eval", help="run an evaluation from scope to report"
+    )
+    eval_subparsers = eval_parser.add_subparsers(dest="eval_command", required=True)
+
+    def _eval_source(parser: argparse.ArgumentParser, required: bool) -> None:
+        group = parser.add_mutually_exclusive_group(required=required)
+        group.add_argument("--demo", action="store_true", help="use the built-in demo registry")
+        group.add_argument(
+            "--registry",
+            help="tool registry factory as 'package.module:factory' or 'path/to/module.py:factory'",
+        )
+
+    def _eval_execution(parser: argparse.ArgumentParser, concurrency: int) -> None:
+        parser.add_argument(
+            "--concurrency", type=int, default=concurrency, help=f"parallel cases (default: {concurrency})"
+        )
+        parser.add_argument(
+            "--timeout",
+            type=float,
+            default=120.0,
+            dest="timeout_s",
+            help="per-case wait limit in seconds (default: 120)",
+        )
+        parser.add_argument(
+            "--retries",
+            type=int,
+            default=2,
+            help="retry an execution error up to N times (default: 2)",
+        )
+        parser.add_argument(
+            "--retry-interval",
+            type=float,
+            default=3.0,
+            dest="retry_interval_s",
+            help="seconds between retries (default: 3)",
+        )
+        parser.add_argument(
+            "--eval-mode",
+            choices=[mode.value for mode in EvalMode],
+            help="evaluation mode declared to the agent: e2e_real or e2e_mock (default: e2e_real)",
+        )
+
+    eval_run_parser = eval_subparsers.add_parser(
+        "run", help="assemble the datasets for a scope and execute them"
+    )
+    eval_run_parser.add_argument("--job", help="run a submitted job by task id")
+    eval_run_parser.add_argument(
+        "--agent",
+        help="agent for task/dialogue cases: 'package.module:factory', '@app-id', or a direct url",
+    )
+    eval_run_parser.add_argument(
+        "--agents", type=Path, dest="agents_path", help="agent registry file for '@app-id'"
+    )
+    eval_run_parser.add_argument(
+        "--judge",
+        help="judge factory for structured scoring (article 6.1 step 4d)",
+    )
+    eval_run_parser.add_argument(
+        "--judge-tasks",
+        type=Path,
+        dest="judge_tasks_path",
+        help="optional task spec file declaring labels, fields and score thresholds",
+    )
+    eval_run_parser.add_argument(
+        "--turn-settle",
+        type=float,
+        default=2.0,
+        dest="turn_settle_s",
+        help="seconds to wait after each dialogue turn for the session to persist (default: 2)",
+    )
+    eval_run_parser.add_argument("--scope", help="evaluation scope")
+    eval_run_parser.add_argument(
+        "--datasets", type=Path, help="dataset registry mapping dataset -> case files"
+    )
+    _eval_execution(eval_run_parser, concurrency=1)
+    eval_run_parser.add_argument("--json", action="store_true", help="emit the scorecard as JSON")
+
+    eval_submit_parser = eval_subparsers.add_parser(
+        "submit", help="submit an evaluation and return immediately with a task id"
+    )
+    eval_submit_parser.add_argument("--scope", required=True, help="evaluation scope")
+    eval_submit_parser.add_argument(
+        "--datasets", type=Path, required=True, help="dataset registry mapping dataset -> case files"
+    )
+    eval_submit_parser.add_argument(
+        "--agent",
+        help="agent for task/dialogue cases: 'package.module:factory', '@app-id', or a direct url",
+    )
+    eval_submit_parser.add_argument(
+        "--agents", type=Path, dest="agents_path", help="agent registry file for '@app-id'"
+    )
+    eval_submit_parser.add_argument("--turn-settle", type=float, default=2.0, dest="turn_settle_s")
+    eval_submit_parser.add_argument("--judge", help="judge factory for structured scoring")
+    eval_submit_parser.add_argument(
+        "--judge-tasks", type=Path, dest="judge_tasks_path", help="optional task spec file"
+    )
+    _eval_execution(eval_submit_parser, concurrency=DEFAULT_EVAL_CONCURRENCY)
+    eval_submit_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    eval_status_parser = eval_subparsers.add_parser(
+        "status", help="poll a job, or list all jobs when no id is given"
+    )
+    eval_status_parser.add_argument("job_id", nargs="?")
+    eval_status_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
+    eval_cancel_parser = eval_subparsers.add_parser(
+        "cancel", help="request cancellation of a running job"
+    )
+    eval_cancel_parser.add_argument("job_id")
+    eval_cancel_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+
     serve_parser = subparsers.add_parser("serve", help="open the local read-only console")
     serve_parser.add_argument("--host", default=DEFAULT_HOST, help=f"bind address (default: {DEFAULT_HOST})")
     serve_parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"port (default: {DEFAULT_PORT})")
@@ -317,6 +492,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--simulator", help="optional user simulator factory; defaults to the scripted simulator"
     )
     dialogue_run_parser.add_argument("--json", action="store_true", help="emit JSON instead of text")
+    dialogue_run_parser.add_argument(
+        "--turn-settle",
+        type=float,
+        default=2.0,
+        dest="turn_settle_s",
+        help="seconds to wait after each turn for the session to persist (default: 2)",
+    )
 
     mcp_parser = subparsers.add_parser("mcp", help="verify an MCP server's protocol and tool contracts")
     mcp_subparsers = mcp_parser.add_subparsers(dest="mcp_command", required=True)
@@ -384,6 +566,10 @@ def main(argv: list[str] | None = None) -> int:
         return _cmd_list(args, store)
     if args.command == "show":
         return _cmd_show(args, store)
+    if args.command == "report":
+        return _cmd_report(args, store)
+    if args.command == "eval":
+        return _cmd_eval(args, store)
     if args.command == "baseline":
         return _cmd_baseline(args, store)
     if args.command == "gate":
@@ -395,7 +581,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "triage":
         return _cmd_triage(args, store)
     if args.command == "judge":
-        return _cmd_judge(args)
+        return _cmd_judge(args, store)
     if args.command == "serve":
         return _cmd_serve(args, store)
     if args.command == "load":
@@ -552,6 +738,383 @@ def _cmd_show(args: argparse.Namespace, store: RunStore) -> int:
         print(run.model_dump_json(indent=2))
     else:
         _print_run(run)
+    return 0
+
+
+def _cmd_eval(args: argparse.Namespace, store: RunStore) -> int:
+    """评测执行引擎入口：run / submit / status / cancel。"""
+
+    command = args.eval_command
+    if command == "run":
+        return _cmd_eval_run(args, store)
+    if command == "submit":
+        return _cmd_eval_submit(args, store)
+    if command == "status":
+        return _cmd_eval_status(args, store)
+    if command == "cancel":
+        return _cmd_eval_cancel(args, store)
+    return 2
+
+
+def _job_store(store: RunStore) -> JobStore:
+    return JobStore.for_home(store.runs_dir.parent)
+
+
+def _fail_job(jobs: JobStore, job: JobRecord | None, message: str) -> None:
+    if job is not None:
+        jobs.update(job.id, status=JobStatus.FAILED, error=message)
+
+
+def _cmd_eval_run(args: argparse.Namespace, store: RunStore) -> int:
+    """按评测范围装配数据集、执行用例并生成记分卡。"""
+
+    jobs = _job_store(store)
+    job: JobRecord | None = None
+    if args.job:
+        try:
+            job = jobs.load(args.job)
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        scope = job.scope
+        datasets_path = Path(job.datasets_path)
+        demo, registry_ref = job.demo, job.registry
+        agent_ref, agents_file = job.agent, (Path(job.agents_path) if job.agents_path else None)
+        judge_ref, judge_tasks_file = (
+            job.judge,
+            Path(job.judge_tasks_path) if job.judge_tasks_path else None,
+        )
+        concurrency, timeout_s = job.concurrency, job.timeout_s
+        retries, retry_interval_s = job.retries, job.retry_interval_s
+        turn_settle_s = job.turn_settle_s
+        eval_mode_value = job.eval_mode
+        jobs.update(job.id, status=JobStatus.RUNNING)
+    else:
+        if not args.scope or args.datasets is None:
+            print("--scope and --datasets are required unless --job is given", file=sys.stderr)
+            return 2
+        scope, datasets_path = args.scope, args.datasets
+        agent_ref, agents_file = getattr(args, "agent", None), getattr(args, "agents_path", None)
+        judge_ref = getattr(args, "judge", None)
+        judge_tasks_file = getattr(args, "judge_tasks_path", None)
+        concurrency, timeout_s = args.concurrency, args.timeout_s
+        retries, retry_interval_s = args.retries, args.retry_interval_s
+        turn_settle_s = getattr(args, "turn_settle_s", 2.0)
+        eval_mode_value = args.eval_mode
+
+    try:
+        registry = DatasetRegistry.load(datasets_path)
+    except FileNotFoundError:
+        message = f"dataset registry not found: {datasets_path}"
+        _fail_job(jobs, job, message)
+        print(message, file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        _fail_job(jobs, job, str(exc))
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    eval_mode = EvalMode(eval_mode_value) if eval_mode_value else EvalMode.REAL
+
+    try:
+        plan = plan_evaluation(
+            scope,
+            registry,
+            eval_mode=eval_mode,
+            concurrency=concurrency,
+            timeout_s=timeout_s,
+            retries=retries,
+            retry_interval_s=retry_interval_s,
+        )
+    except ValueError as exc:
+        _fail_job(jobs, job, str(exc))
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    # 文章 §2.1：工具属于 agent 自己的工具模块；平台不派发、不代执行
+    def make_env() -> Any:
+        return ToolRegistry()
+
+    try:
+        cases = assemble_cases(plan)
+    except ValueError as exc:
+        _fail_job(jobs, job, str(exc))
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if not agent_ref:
+        message = (
+            "the evaluation engine drives the agent chain; pass --agent "
+            "('package.module:factory', '@app-id' with --agents, or a direct url)"
+        )
+        _fail_job(jobs, job, message)
+        print(message, file=sys.stderr)
+        return 2
+    has_task = any(isinstance(case, TaskCase) for case in cases)
+    try:
+        resolved = _resolve_agent(
+            agent_ref, agents_file, "task" if has_task else "dialogue"
+        )
+    except (SystemExit, BridgeError, ValueError) as exc:
+        _fail_job(jobs, job, str(exc))
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    runner = AgentEvalRunner(store=store)
+    has_dialogue = any(isinstance(case, DialogueCase) for case in cases)
+    if isinstance(resolved, BridgeAgent):
+        if has_task:
+            runner.tasks = TaskRunner(
+                agent=resolved.for_task(),
+                environment=make_env,
+                eval_mode=eval_mode.value,
+            )
+        if has_dialogue:
+            runner.dialogues = DialogueRunner(
+                agent=resolved.for_dialogue(),
+                environment=make_env,
+                turn_settle_s=turn_settle_s,
+                eval_mode=eval_mode.value,
+            )
+    else:
+        agent_obj = resolved()
+        if not callable(agent_obj):
+            message = "agent factory must return a callable agent"
+            _fail_job(jobs, job, message)
+            print(message, file=sys.stderr)
+            return 2
+        if has_task:
+            runner.tasks = TaskRunner(
+                agent=agent_obj, environment=make_env, eval_mode=eval_mode.value
+            )
+        if has_dialogue:
+            runner.dialogues = DialogueRunner(
+                agent=agent_obj,
+                environment=make_env,
+                turn_settle_s=turn_settle_s,
+                eval_mode=eval_mode.value,
+            )
+
+    if judge_ref:
+        try:
+            judge_obj = load_factory(judge_ref, "judge")()
+        except SystemExit as exc:
+            _fail_job(jobs, job, str(exc))
+            print(str(exc), file=sys.stderr)
+            return 2
+        if not callable(judge_obj):
+            message = "judge factory must return a callable judge"
+            _fail_job(jobs, job, message)
+            print(message, file=sys.stderr)
+            return 2
+        runner.judge = judge_obj
+        try:
+            runner.judge_tasks = (
+                load_task_specs(judge_tasks_file)
+                if judge_tasks_file is not None
+                else build_judge_tasks(plan.metrics)
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            _fail_job(jobs, job, str(exc))
+            print(str(exc), file=sys.stderr)
+            return 2
+
+    cancel_check = (lambda: jobs.load(job.id).cancel_requested) if job is not None else None
+    try:
+        run = run_plan(plan, runner, cancel_check=cancel_check, cases=cases)
+    except (ValueError, KeyError) as exc:
+        _fail_job(jobs, job, str(exc))
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if isinstance(resolved, BridgeAgent):
+        # bridge 上报的 token / 模型调用按用例累计，并进运行记录后再算记分卡
+        resolved.apply_usage(run)
+        _flush_run(store, run)
+
+    scorecard = build_scorecard(run)
+    _record_conclusion(
+        args,
+        kind=KIND_REPORT,
+        title=f"eval {run.run_id} ({plan.scope.value})",
+        run_id=run.run_id,
+        summary=_scorecard_summary(scorecard),
+        payload=scorecard.model_dump(mode="json"),
+    )
+
+    cancelled = bool(run.metadata.get("engine", {}).get("cancelled"))
+    ok = run.summary.failed == 0 and run.summary.errored == 0 and not cancelled
+    if job is not None:
+        jobs.update(
+            job.id,
+            status=(
+                JobStatus.CANCELLED
+                if cancelled
+                else (JobStatus.COMPLETED if ok else JobStatus.FAILED)
+            ),
+            run_id=run.run_id,
+            total=scorecard.total,
+            passed=scorecard.passed,
+            failed=scorecard.failed,
+            errored=scorecard.errored,
+            primary_pass_rate=scorecard.primary_pass_rate,
+        )
+
+    if args.json:
+        print(scorecard.model_dump_json(indent=2))
+    else:
+        print(format_plan(plan))
+        print()
+        print(format_scorecard(scorecard))
+    return 0 if ok else 1
+
+
+def _cmd_eval_submit(args: argparse.Namespace, store: RunStore) -> int:
+    """异步提交一次评测：立即返回 taskId，后台执行。"""
+
+    jobs = _job_store(store)
+    if not args.datasets.is_file():
+        print(f"dataset registry not found: {args.datasets}", file=sys.stderr)
+        return 2
+    record = JobRecord(
+        id=new_job_id(),
+        scope=args.scope,
+        eval_mode=args.eval_mode or EvalMode.REAL.value,
+        datasets_path=str(Path(args.datasets).resolve()),
+        demo=args.demo,
+        registry=args.registry,
+        agent=getattr(args, "agent", None),
+        agents_path=str(args.agents_path) if getattr(args, "agents_path", None) else None,
+        turn_settle_s=getattr(args, "turn_settle_s", 2.0),
+        judge=getattr(args, "judge", None),
+        judge_tasks_path=(
+            str(args.judge_tasks_path) if getattr(args, "judge_tasks_path", None) else None
+        ),
+        concurrency=args.concurrency,
+        timeout_s=args.timeout_s,
+        retries=args.retries,
+        retry_interval_s=args.retry_interval_s,
+    )
+    jobs.save(record)
+    spawn_worker(store.runs_dir.parent, record.id)
+    if args.json:
+        print(record.model_dump_json(indent=2))
+    else:
+        print(f"task id: {record.id}")
+        print(f"status: {record.status.value}")
+    return 0
+
+
+def _cmd_eval_status(args: argparse.Namespace, store: RunStore) -> int:
+    """轮询一条作业，或列出全部作业。"""
+
+    jobs = _job_store(store)
+    if args.job_id:
+        try:
+            record = jobs.load(args.job_id)
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if args.json:
+            print(record.model_dump_json(indent=2))
+        else:
+            print(_format_job(record))
+        return 0
+
+    records = jobs.list()
+    if args.json:
+        print(
+            json.dumps(
+                [record.model_dump(mode="json") for record in records],
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if not records:
+        print("no jobs")
+        return 0
+    for record in records:
+        print(_format_job(record))
+    return 0
+
+
+def _cmd_eval_cancel(args: argparse.Namespace, store: RunStore) -> int:
+    """请求取消一条运行中的作业。"""
+
+    jobs = _job_store(store)
+    try:
+        record = jobs.cancel(args.job_id)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(record.model_dump_json(indent=2))
+    else:
+        print(_format_job(record))
+    return 0
+
+
+def _format_job(record: JobRecord) -> str:
+    parts = [f"{record.id}", record.status.value, f"scope={record.scope}"]
+    if record.run_id:
+        parts.append(f"run={record.run_id}")
+    if record.primary_pass_rate is not None:
+        parts.append(f"primary_pass_rate={record.primary_pass_rate:.4f}")
+    if record.error:
+        parts.append(f"error={record.error}")
+    return "  ".join(parts)
+
+
+def _scorecard_summary(scorecard: Any) -> dict[str, Any]:
+    return {
+        "scope": scorecard.scope.value,
+        "eval_mode": scorecard.eval_mode,
+        "primary_metric": scorecard.primary_metric,
+        "passed": scorecard.passed,
+        "failed": scorecard.failed,
+        "errored": scorecard.errored,
+        "skipped": scorecard.skipped,
+        "pass_rate": scorecard.pass_rate,
+        "primary_pass_rate": scorecard.primary_pass_rate,
+    }
+
+
+def _cmd_report(args: argparse.Namespace, store: RunStore) -> int:
+    """把一次运行折算成质量、成本、性能三维记分卡。"""
+
+    run_id = args.run_id or _latest_run_id(store)
+    if run_id is None:
+        print("no runs recorded", file=sys.stderr)
+        return 2
+    try:
+        run = store.load(run_id)
+    except FileNotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    scorecard = build_scorecard(run, scope=args.scope)
+    _record_conclusion(
+        args,
+        kind=KIND_REPORT,
+        title=f"report {scorecard.run_id} ({scorecard.scope.value})",
+        run_id=scorecard.run_id,
+        summary={
+            "scope": scorecard.scope.value,
+            "eval_mode": scorecard.eval_mode,
+            "primary_metric": scorecard.primary_metric,
+            "passed": scorecard.passed,
+            "failed": scorecard.failed,
+            "errored": scorecard.errored,
+            "skipped": scorecard.skipped,
+            "pass_rate": scorecard.pass_rate,
+            "primary_pass_rate": scorecard.primary_pass_rate,
+        },
+        payload=scorecard.model_dump(mode="json"),
+    )
+    if args.json:
+        print(scorecard.model_dump_json(indent=2))
+    else:
+        print(format_scorecard(scorecard))
     return 0
 
 
@@ -785,6 +1348,7 @@ def _cmd_task_run(args: argparse.Namespace, store: RunStore) -> int:
         return 2
     if bridge is not None:
         bridge.apply_usage(run)
+        _flush_run(store, run)
     report: dict[str, Any] = run.metadata.get("task_report") or {}
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -902,7 +1466,9 @@ def _load_original_cases(path: Path) -> list[AnyCase]:
         return list(load_tasks(path))
 
 
-def _cmd_judge(args: argparse.Namespace) -> int:
+def _cmd_judge(args: argparse.Namespace, store: RunStore) -> int:
+    if args.judge_command == "task":
+        return _cmd_judge_task(args, store)
     if args.judge_command != "calibrate":
         return 2
     try:
@@ -949,6 +1515,80 @@ def _cmd_judge(args: argparse.Namespace) -> int:
     return 0 if report.usable_for_gate else 1
 
 
+def _cmd_judge_task(args: argparse.Namespace, store: RunStore) -> int:
+    """执行结构化裁判任务，把逐指标结论写成一条运行记录。"""
+
+    try:
+        cases = load_judge_cases(args.cases)
+    except FileNotFoundError:
+        print(f"judge cases not found: {args.cases}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if args.run:
+        try:
+            source_run = store.load(args.run)
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        traces = {trace.case_id: trace for trace in source_run.traces}
+        for case in cases:
+            trace = traces.get(case.id)
+            if trace is None:
+                continue
+            # 文章 §6.1：把 Agent 输出与 EvalTrace 一起交给 Judge；用例自己声明的证据优先
+            evidence = evidence_from_trace(trace, expected_route=case.expected_route)
+            evidence.update(case.evidence)
+            case.evidence = evidence
+
+    try:
+        if args.tasks is not None:
+            tasks = load_task_specs(args.tasks)
+        else:
+            declared = [metric for case in cases for metric in case.metrics]
+            if not declared:
+                print(
+                    "no metrics declared: add a 'metrics' list per case or pass --tasks",
+                    file=sys.stderr,
+                )
+                return 2
+            tasks = build_judge_tasks(declared)
+    except FileNotFoundError:
+        print(f"task spec not found: {args.tasks}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    judge = load_factory(args.judge, "judge")()
+    if not callable(judge):
+        raise SystemExit("judge factory must return a callable judge")
+
+    run = run_judge_tasks(
+        cases,
+        tasks,
+        judge,
+        store=store,
+        metadata=_judge_task_metadata(cases),
+    )
+    if args.json:
+        print(run.model_dump_json(indent=2))
+    else:
+        print(format_judge_task_run(run))
+    return 0 if all(verdict.status is Status.PASS for verdict in run.verdicts) else 1
+
+
+def _judge_task_metadata(cases: Sequence[Any]) -> dict[str, Any]:
+    """用例都归属同一个数据集时把该数据集作为评测范围，供记分卡直接使用。"""
+
+    datasets = {case.dataset_type for case in cases if case.dataset_type}
+    if len(datasets) == 1:
+        return {"scope": next(iter(datasets))}
+    return {}
+
+
 def _conclusion_store_from_args(args: argparse.Namespace) -> ConclusionStore:
     if args.home is not None:
         return ConclusionStore(Path(args.home) / REPORTS_DIRNAME)
@@ -962,6 +1602,15 @@ def _record_conclusion(args: argparse.Namespace, **fields: Any) -> None:
         write_conclusion(_conclusion_store_from_args(args), **fields)
     except OSError as exc:
         print(f"warning: could not persist conclusion: {exc}", file=sys.stderr)
+
+
+def _flush_run(store: RunStore, run: Run) -> None:
+    """agent 上报的用量在运行落盘后才并入，回写一次避免用量丢失。"""
+
+    try:
+        store.save(run)
+    except OSError as exc:
+        print(f"warning: could not persist usage: {exc}", file=sys.stderr)
 
 
 def _cmd_serve(args: argparse.Namespace, store: RunStore) -> int:
@@ -1114,6 +1763,7 @@ def _cmd_redteam(args: argparse.Namespace, store: RunStore) -> int:
     run = RedTeamRunner(target=target, store=store).run(probes, metadata=metadata)
     if bridge is not None:
         bridge.apply_usage(run)
+        _flush_run(store, run)
     if args.json:
         print(json.dumps(run.metadata.get("redteam_report") or {}, ensure_ascii=False, indent=2))
     else:
@@ -1179,9 +1829,11 @@ def _cmd_dialogue(args: argparse.Namespace, store: RunStore) -> int:
         environment=environment,
         simulator=simulator,
         store=store,
+        turn_settle_s=getattr(args, "turn_settle_s", 0.0),
     ).run(cases, metadata=metadata)
     if bridge is not None:
         bridge.apply_usage(run)
+        _flush_run(store, run)
     if args.json:
         print(json.dumps(run.metadata.get("dialogues") or {}, ensure_ascii=False, indent=2))
     else:
@@ -1279,6 +1931,7 @@ def _cmd_selection(args: argparse.Namespace, store: RunStore) -> int:
     )
     if bridge is not None:
         bridge.apply_usage(run)
+        _flush_run(store, run)
     if args.json:
         print(
             json.dumps(

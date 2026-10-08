@@ -16,6 +16,23 @@
       ],
       "max_steps": 5,
       "max_duration_ms": 20000
+    },
+    {
+      "id": "console-scorecard-render",
+      "name": "控制台结论区把评测记分卡渲染成三维指标",
+      "base_url": "http://127.0.0.1:8000",
+      "steps": [
+        { "action": "goto", "target": "/" },
+        { "action": "click", "target": "text=\"结论\"" }
+      ],
+      "expect": [
+        { "kind": "visible", "target": "text=\"评测记分卡\"" },
+        { "kind": "visible", "target": "text=\"主指标通过率\"" },
+        { "kind": "visible", "target": "text=\"场景通过率\"" },
+        { "kind": "text", "target": ".block-title", "expected": "概览" }
+      ],
+      "max_steps": 3,
+      "max_duration_ms": 20000
     }
   ]
 }

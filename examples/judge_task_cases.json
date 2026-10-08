@@ -1,0 +1,53 @@
+{
+  "cases": [
+    {
+      "id": "KQA-001",
+      "dataset_type": "knowledge_qa",
+      "scene": "知识问答",
+      "input": "商品 1005007651467330 在韩国不可售是什么原因？",
+      "output": "该商品在韩国不可售，原因是 sale_country_rule 配置了黑名单模式。路由=skill_miss 工具=[repo_vector_search] country=KR product_id=1005007651467330",
+      "reference": "该商品在韩国不可售，原因是 sale_country_rule 配置了黑名单模式。",
+      "metrics": [
+        "task_completion",
+        "faithfulness",
+        "route_accuracy",
+        "tool_call_accuracy",
+        "param_mapping_accuracy"
+      ],
+      "expected": {
+        "task_completion": "pass",
+        "faithfulness": "pass",
+        "route_accuracy": "skill_miss",
+        "tool_call_accuracy": ["repo_vector_search"],
+        "param_mapping_accuracy": { "country": "KR", "product_id": "1005007651467330" }
+      }
+    },
+    {
+      "id": "BF-002",
+      "dataset_type": "basic_function",
+      "scene": "基础技能",
+      "input": "帮我分析错误码 F_IC_SERVICE_QUERY_020 是什么意思",
+      "output": "抱歉，我无法回答这个问题。标签=skill_miss",
+      "reference": "F_IC_SERVICE_QUERY_020 表示查询商品时未找到指定商品。",
+      "metrics": ["task_completion", "route_accuracy"],
+      "expected": {
+        "task_completion": "pass",
+        "route_accuracy": "skill_hit"
+      }
+    },
+    {
+      "id": "KQA-003",
+      "dataset_type": "knowledge_qa",
+      "scene": "知识问答",
+      "input": "IC 的 deleteAllProducts 接口怎么调用？",
+      "output": "IC 中不存在 deleteAllProducts 接口，应明确告知未找到该接口的相关信息。标签=skill_miss",
+      "reference": "IC 中不存在 deleteAllProducts 接口。",
+      "metrics": ["task_completion", "faithfulness"],
+      "evidence": { "route_error": true },
+      "expected": {
+        "task_completion": "pass",
+        "faithfulness": "pass"
+      }
+    }
+  ]
+}

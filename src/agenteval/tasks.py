@@ -26,9 +26,11 @@ from agenteval.models import (
     Trace,
     Verdict,
 )
+from agenteval.case_context import case_context
 from agenteval.metrics import summarize_metrics
 from agenteval.process import (
     TraceSession,
+    apply_upstream_skip,
     extract_tool_calls,
     measure_calls,
     process_handler,
@@ -150,9 +152,18 @@ def evaluate_task_checks(
     for spec in task.checks:
         handler = process_handler(spec.kind)
         if handler is not None:
-            outcomes.extend(handler(spec, calls, trace))
+            produced = handler(spec, calls, trace)
+            metric = getattr(spec, "metric", None)
+            if metric:
+                for outcome in produced:
+                    if outcome.metric is None:
+                        outcome.metric = metric
+            outcomes.extend(produced)
         elif isinstance(spec, FinalStateCheck):
-            outcomes.append(check_final_state(spec, registry))
+            outcome = check_final_state(spec, registry)
+            if spec.metric and outcome.metric is None:
+                outcome.metric = spec.metric
+            outcomes.append(outcome)
         else:
             outcomes.append(
                 CheckOutcome(
@@ -163,6 +174,7 @@ def evaluate_task_checks(
                     message="unsupported task check",
                 )
             )
+    apply_upstream_skip(outcomes)
     return outcomes
 
 
@@ -246,6 +258,7 @@ class TaskRunner:
     store: RunStore | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     sandbox: SandboxSession | None = None
+    eval_mode: str | None = None
 
     def run_task(self, task: TaskCase, attempt: int = 1) -> tuple[Verdict, Trace]:
         """在干净环境里跑一次任务，返回判定与轨迹。
@@ -278,8 +291,17 @@ class TaskRunner:
 
         session = TraceSession()
         session.begin_case(trace)
+        output: str | None = None
         try:
-            self.agent(wrap_registry_for_trace(registry, session), task)
+            # 文章 §6.1 步骤 4a：注入 sessionId 与 Mock 数据
+            with case_context(
+                session_id=task.session_id or case_id,
+                mock=task.mock,
+                eval_mode=self.eval_mode,
+            ):
+                result = self.agent(wrap_registry_for_trace(registry, session), task)
+            if isinstance(result, str):
+                output = result
         except Exception as exc:  # noqa: BLE001 - agent 异常不终止整轮运行
             session.end_case()
             return self._error(
@@ -300,9 +322,12 @@ class TaskRunner:
         else:
             checks = evaluate_task_checks(task, registry, trace)
         status = Status.PASS if all(check.passed for check in checks) else Status.FAIL
-        verdict = Verdict(case_id=case_id, status=status, checks=checks)
+        verdict = Verdict(case_id=case_id, status=status, checks=checks, output=output)
         verdict.duration_ms = round((time.perf_counter() - start) * 1000, 3)
-        verdict.metrics = measure_calls(trace)
+        metrics = measure_calls(trace)
+        # 任务级耗时以墙钟为准；工具调用跨度只作为内部参考
+        metrics.duration_ms = verdict.duration_ms
+        verdict.metrics = metrics
         return verdict, trace
 
     def run(
@@ -330,6 +355,8 @@ class TaskRunner:
         for task in task_list:
             for attempt in range(1, task.attempts + 1):
                 verdict, trace = self.run_task(task, attempt)
+                verdict.scene = task.scene
+                verdict.dataset_type = task.dataset_type
                 run.verdicts.append(verdict)
                 run.traces.append(trace)
         if self.sandbox is not None:

@@ -22,6 +22,30 @@ def make_task(task_id: str, checks: list[dict[str, Any]]) -> TaskCase:
     return TaskCase.model_validate({"id": task_id, "checks": checks})
 
 
+def test_final_state_check_carries_declared_metric() -> None:
+    """终态断言的指标应写到判定上，供记分卡按指标归口。"""
+
+    from agenteval.models import TaskCase, Trace
+    from agenteval.tasks import evaluate_task_checks
+    from agenteval.tools import ToolRegistry
+
+    task = TaskCase(
+        id="t",
+        checks=[
+            {
+                "kind": "final_state",
+                "tool": "echo_tool",
+                "field": "ok",
+                "expected": True,
+                "metric": "task_completion",
+            }
+        ],
+    )
+    registry = ToolRegistry([])
+    outcomes = evaluate_task_checks(task, registry, Trace(case_id="t"))
+    assert outcomes and outcomes[0].metric == "task_completion"
+
+
 def test_task_registry_factory_returns_isolated_instances() -> None:
     assert build_task_registry().get("ledger_tool") is not build_task_registry().get("ledger_tool")
 

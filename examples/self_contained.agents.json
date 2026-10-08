@@ -1,0 +1,17 @@
+{
+  "agents": [
+    {
+      "id": "self-contained",
+      "version": "0.1.0",
+      "transport": "subprocess",
+      "command": "python",
+      "args": [
+        "examples/agents/self_contained_agent.py"
+      ],
+      "capabilities": [
+        "task",
+        "dialogue"
+      ]
+    }
+  ]
+}

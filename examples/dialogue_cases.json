@@ -10,9 +10,24 @@
       ],
       "max_turns": 4,
       "checks": [
-        { "kind": "required_clarification", "marker": "时间", "before_tool": "echo_tool" },
-        { "kind": "termination", "marker": "已确认" }
-      ]
+        {
+          "kind": "required_clarification",
+          "marker": "时间",
+          "before_tool": "echo_tool",
+          "metric": "multi_turn_completion"
+        },
+        {
+          "kind": "termination",
+          "marker": "已确认",
+          "metric": "multi_turn_completion"
+        }
+      ],
+      "scene": "多轮对话",
+      "user_input": "订单 12345 一直没支付成功，帮我看看。",
+      "expected_output": "确认支付网关超时，并向用户收尾。",
+      "expected": {
+        "multi_turn_completion": "pass"
+      }
     }
   ]
 }

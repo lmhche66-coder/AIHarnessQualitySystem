@@ -278,3 +278,40 @@ def test_page_has_no_external_resources(tmp_path: Path) -> None:
     assert 'src="http' not in html
     assert 'href="http' not in html
     assert "cdn" not in html
+
+
+def test_reports_endpoint_serves_scorecard_payload(tmp_path: Path, capsys) -> None:
+    from agenteval.cli import main
+
+    examples = Path(__file__).resolve().parents[1] / "examples"
+    home = tmp_path / "home"
+    assert (
+        main(
+            [
+                "--home",
+                str(home),
+                "run",
+                "--cases",
+                str(examples / "scorecard_cases.json"),
+                "--demo",
+            ]
+        )
+        == 0
+    )
+    assert main(["--home", str(home), "report", "--scope", "tool_call"]) == 0
+    capsys.readouterr()
+
+    store = RunStore(home / "runs")
+    with running_console(store) as base:
+        status, body = fetch(f"{base}/api/reports")
+
+    assert status == 200
+    records = json.loads(body)["reports"]
+    report = next(item for item in records if item["kind"] == "report")
+    payload = report["payload"]
+    # 前端记分卡视图依赖这几个字段；缺一不可
+    for key in ("quality", "cost", "performance", "modules", "scenes", "cases"):
+        assert key in payload, key
+    assert payload["scope"] == "tool_call"
+    assert payload["primary_metric"] == "tool_call_accuracy"
+    assert payload["cases"] and all("primary_state" in case for case in payload["cases"])
