@@ -161,40 +161,6 @@ python -m agenteval --home .agenteval --agents examples/http_agent.agents.json \
   --agent @http-agent
 ```
 
-## 函数选择打分
-
-工具选错和参数填错，最终答案里未必看得出来。选择打分把调用规整成「函数名 + 参数」逐项比对，覆盖错选、漏选、多选、参数不符、并行调用缺失，以及无关请求下的正确「不调用」。
-
-```json
-{
-  "cases": [
-    {
-      "id": "parallel-complete",
-      "prompt": "把北京和上海的天气都查一下",
-      "available_tools": ["get_weather", "send_email"],
-      "expected": [
-        { "name": "get_weather", "arguments": { "city": "北京" } },
-        { "name": "get_weather", "arguments": { "city": "上海" } }
-      ],
-      "actual": [
-        { "name": "get_weather", "arguments": { "city": "北京" } },
-        { "name": "get_weather", "arguments": { "city": "上海" } }
-      ]
-    }
-  ]
-}
-```
-
-```bash
-python -m agenteval --home .agenteval selection run --cases examples/selection_cases.json
-# 也可以让 agent 当场产出调用，而不是读用例里的 actual
-python -m agenteval --home .agenteval selection run \
-  --cases examples/selection_cases.json \
-  --agent myagent.py:build_agent
-```
-
-用例里的 `actual` 供离线复评使用；`--agent` 则接收用例、返回结构化调用列表。解析模型的自由文本输出是接入方的责任，打分只处理已结构化的调用，因此结论确定且可解释。
-
 ## 质量门禁
 
 门禁回答三个问题：有没有基线、有没有阈值、低于阈值能不能自动拦住。
@@ -371,6 +337,15 @@ python -m agenteval --home .agenteval dialogue run \
 ```
 
 剧本模拟器用尽即自然结束，此时回合预算判据通过；预算先耗尽则判失败，于是「几轮内收敛」本身成为可断言的判据。每轮的工具调用被切片归到对应回合，对话结果同样写入运行记录与轨迹，因此四类过程断言与门禁无需改动即可复用。
+
+#### 多轮对话特化
+
+```bash
+python -m agenteval --home .agenteval dialogue run \
+  --cases examples/dialogue_cases.json --agent @support-agent --turn-settle 2
+```
+
+`--turn-settle`（默认 2 秒）在每一轮结束后等待会话持久化完成，再发起下一轮，避免下一轮读不到历史。Token 与模型调用经 bridge 按整组对话累计。
 
 ## 端到端任务成功率
 
@@ -648,7 +623,7 @@ python -m agenteval --home .agenteval gate --min-pass-rate 1.0
 
 ## 评测执行引擎：从范围到报告
 
-一篇文章里的评测链路是固定的：**提交评测请求（范围 + 评测模式）→ 自动装配数据集 → 并发执行 → 采集轨迹与指标 → 结构化评分 → 生成报告**。`eval run` 把这条链路一次跑完：范围决定装配哪些数据集，数据集注册表决定每个数据集从哪些用例文件加载。
+评测链路是固定的：**提交评测请求（范围 + 评测模式）→ 自动装配数据集 → 并发执行 → 采集轨迹与指标 → 结构化评分 → 生成报告**。`eval run` 把这条链路一次跑完：范围决定装配哪些数据集，数据集注册表决定每个数据集从哪些用例文件加载。
 
 ```json
 {
@@ -671,11 +646,11 @@ python -m agenteval --home .agenteval eval run \
   --concurrency 1 --timeout 120 --retries 2
 ```
 
-任务与多轮对话的检查可以声明 `metric`，判定会带上该指标，记分卡因此按文章那套指标（`task_completion`、`multi_turn_completion`、`tool_call_accuracy` 等）聚合，而不是回退到断言名。
+任务与多轮对话的检查可以声明 `metric`，判定会带上该指标，记分卡因此按统一的指标口径（`task_completion`、`multi_turn_completion`、`tool_call_accuracy` 等）聚合，而不是回退到断言名。
 
 工具属于 **Agent 自己的工具模块**（MCP / Skill）：`eval run` **不接受任何工具环境参数**，Agent 用它自己的工具完成任务，并把「已经执行过的调用」（工具名、参数、是否成功、耗时）回报给平台记账；平台不派发工具、也不代执行。
 
-`eval run` 走的是文章 §6.1 的那条链路：**评测用例 → 交给 Agent → 采集轨迹 → 交裁判**。因此它只执行 **agent 用例**——单轮任务（`TaskCase`）与多轮对话（`DialogueCase`），并强制要求 `--agent`。平台上还有「直接调用工具、不经 agent」的契约与过程用例（工具契约测试那一层），那类用例用 `run` 跑，`eval run` 会明确拒收。
+`eval run` 走的是完整链路：**评测用例 → 交给 Agent → 采集轨迹 → 交裁判**。因此它只执行 **agent 用例**——单轮任务（`TaskCase`）与多轮对话（`DialogueCase`），并强制要求 `--agent`。平台上还有「直接调用工具、不经 agent」的契约与过程用例（工具契约测试那一层），那类用例用 `run` 跑，`eval run` 会明确拒收。
 
 ```
 eval plan: end_to_end  eval_mode: e2e_real
@@ -689,84 +664,23 @@ execution: concurrency=1  timeout_s=120.0  retries=2
 scorecard: …（质量 × 成本 × 性能三栏）
 ```
 
-执行控制与文章第 6 节一致：
+执行控制：
 
 - **并发**。`--concurrency` 大于 1 时并行执行，前提是被测 agent 自身并发安全；批量提交（`eval submit`）默认 3 线程。
 - **单条超时**。`--timeout` 是单条用例的等待上限，超时判为 `error` 并说明原因，不阻塞其余用例。
-- **重试与容错**（文章 §6.6）。`--retries`（默认 2）**只对执行异常**重试——超时、异常等判为 `error` 的用例，每次间隔 `--retry-interval`（默认 3 秒）；**判定不通过（fail）不重试**，因为那是能力问题，重试不会改变结果。逐用例尝试次数写入运行元数据。
+- **重试与容错**。`--retries`（默认 2）**只对执行异常**重试——超时、异常等判为 `error` 的用例，每次间隔 `--retry-interval`（默认 3 秒）；**判定不通过（fail）不重试**，因为那是能力问题，重试不会改变结果。逐用例尝试次数写入运行元数据。
 - **两种评测模式**。`--eval-mode e2e_real` 走真实链路；`--eval-mode e2e_mock` 时平台把模式与 Mock 数据一起注入执行上下文，由拥有工具的 agent 用预设数据代替真实外部调用。声明的模式写进运行元数据，记分卡据此标注。
 - **范围自动装配**。范围内的数据集若没有注册用例文件，会列入 `missing` 而不是被静默忽略；所有数据集都无文件时命令以可读错误结束。
 
 `eval run` 结束时会把本次记分卡写成一条 `report` 结论，因此控制台与门禁无需改动即可消费。一次评测可以同时装配单轮任务与多轮对话，引擎按用例类型分派给同一个 Agent，最后汇总成一份运行记录。
 
-### 全量范围（文章 §6.2）
-
-评测范围共 15 种：8 类数据集、端到端、**全量评测**（`full`，装配全部 8 类数据集）、四个模块范围与核心模块范围。
-
-### 用例的输入、期望与 Mock（文章 §6.1 步骤 2/4a）
+### 用例的输入、期望与 Mock
 
 用例可以声明 `user_input`、`expected_output`、`expected`（逐指标期望）、`mock`、`session_id` 与 `expected_route`。这些字段可选，既有用例无需改动。
 
-执行时平台会**注入执行上下文**（文章 §6.1 步骤 4a）：`session_id`（缺省取用例标识，多轮对话各轮共享）与 `mock` 数据一起放进 bridge 请求的 `context`，`user_input` 作为给 Agent 的用户消息；同时把它们连同 Agent 输出、轨迹证据一起交给裁判。
+执行时平台会**注入执行上下文**：`session_id`（缺省取用例标识，多轮对话各轮共享）与 `mock` 数据一起放进 bridge 请求的 `context`，`user_input` 作为给 Agent 的用户消息；同时把它们连同 Agent 输出、轨迹证据一起交给裁判。
 
-### 裁判在引擎内执行（文章 §6.1 步骤 4d）
-
-`eval run` 可以带 `--judge`：按评测范围自动装配裁判任务（`--judge-tasks` 可覆盖），对每条用例把 **Agent 输出 + EvalTrace** 交给裁判，逐指标结论并入同一份运行记录，记分卡直接消费——不必再手工跑 `judge task`。
-
-```bash
-python -m agenteval --home .agenteval eval run \
-  --scope end_to_end --datasets examples/eval_datasets.json \
-  --agents examples/self_contained.agents.json --agent @self-contained \
-  --judge examples/demo_judge_tasks.py:build_keyword_judge \
-  --judge-tasks examples/eval_judge_tasks.json
-```
-
-### Trace 结构（对齐文章 §6.3）
-
-一条用例的轨迹由事件流组成，覆盖文章的六组信息：
-
-| 节点 | 事件 | 字段 |
-| --- | --- | --- |
-| 感知 | `module.perception` | `hit`、`skill`、`intent`、`duration_ms` |
-| 规划 | `module.planning` | `duration_ms`（另含 `route` / `tools`） |
-| 记忆 | `module.memory` | `duration_ms`、`turns`（另含 `injected`） |
-| 工具 | `tool_call` | `target`、`args`、`ok`、`error_kind`、`attempts`、`duration_ms` |
-| RAG | `module.retrieval` | `duration_ms`、`count`、`chunks` |
-| 模型消耗 | `model.usage` | `model_calls`、`input_tokens`、`output_tokens` |
-
-工具调用与模型消耗由**平台记账**（Agent 回报或平台代执行）；感知/规划/记忆/RAG 是 Agent 内部信息，由 Agent 通过 bridge 的 `signals` 上报。缺哪项，哪项就不出现在报告里，不补零。
-
-### 运行时指标落数（文章 §6.3）
-
-记分卡不再只是「声明指标」，而是把轨迹里的数据落成数字：
-
-- **模块级延迟**：工具调用耗时有两个来源——平台代执行时由**平台自动测量**；Agent 自带工具时由 **Agent 在回报的调用里带上 `duration_ms`**。其余（感知/规划/记忆/检索）由 `module.*` 信号的 `duration_ms` 聚合出 `intent_latency`、`planning_latency`、`memory_injection_latency`、`retrieval_latency`、`tool_latency`，连同 `e2e_latency` 一起给出均值与 p50/p95。没有数据的指标不出现在报告里，不臆造零值。
-- **模型调用次数**：agent 在 bridge 的 `usage` 里上报 `model_calls`，平台贯通 `TokenUsage → CaseMetrics → 运行指标 → 记分卡`，成本栏展示 `model_calls`。
-
-### 轨迹感知的裁判（文章 §6.1 步骤 4d）
-
-裁判不只看输出文本。`judge task --run <run_id>` 会把该运行轨迹里的中间数据一并交给裁判：
-
-```bash
-python -m agenteval --home .agenteval judge task \
-  --cases examples/judge_task_cases.json \
-  --tasks examples/judge_tasks.json \
-  --run <run_id> \
-  --judge examples/demo_judge_tasks.py:build_keyword_judge
-```
-
-平台从轨迹抽取命中 Skill、路由方向、调用过的工具、检索片段与各段耗时（`evidence_from_trace`）；用例声明了 `expected_route` 而实际路由不符时，按 §5.4 跳过依赖检索证据的下游指标。
-
-### 多轮对话特化（文章 §6.4）
-
-```bash
-python -m agenteval --home .agenteval dialogue run \
-  --cases examples/dialogue_cases.json --agent @support-agent --turn-settle 2
-```
-
-`--turn-settle`（默认 2 秒）在每一轮结束后等待会话持久化完成，再发起下一轮，避免下一轮读不到历史。Token 与模型调用经 bridge 按整组对话累计。
-
-### 异步作业：提交、轮询、取消（文章 §6.7）
+### 异步作业：提交、轮询、取消
 
 批量评测支持异步提交-轮询，批量并发默认 3 线程：
 
@@ -841,10 +755,13 @@ scenes:
 
 控制台的「结论」分区会识别这条 `report` 结论，把它渲染成三维记分卡：质量栏按感知、规划、记忆、工具给出模块级与指标级通过率，另有成本、性能、场景通过率，以及只列未通过与被跳过用例的诊断明细。
 
+#### 全量范围
+
+评测范围共 15 种：8 类数据集、端到端、**全量评测**（`full`，装配全部 8 类数据集）、四个模块范围与核心模块范围。
 
 ## 模块级评测（感知 / 规划 / 记忆 / 工具）
 
-三维记分卡回答「哪个维度、哪个场景」，模块级评测回答「哪个模块」。参考文章的 EvalTrace 设计，被测 agent 的每个节点把执行信息写进轨迹，平台据此做模块级断言，而不是从最终回复里反推。信号通过 bridge 协议的可选 `signals` 字段上报：
+三维记分卡回答「哪个维度、哪个场景」，模块级评测回答「哪个模块」。被测 agent 的每个节点把执行信息写进轨迹，平台据此做模块级断言，而不是从最终回复里反推。信号通过 bridge 协议的可选 `signals` 字段上报：
 
 ```json
 {
@@ -885,13 +802,35 @@ modules:
   - memory: 1.0000 (pass 2/2, skipped 0)
 ```
 
-一条与文章一致的规则：路由决策失败时，依赖检索证据的下游指标（忠实性、检索精确率/召回率）自动标记为跳过，既不计入分子也不计入分母——路由错误只体现在路由决策指标上，不会雪崩式拉低记忆模块的数字。
+一条重要规则：路由决策失败时，依赖检索证据的下游指标（忠实性、检索精确率/召回率）自动标记为跳过，既不计入分子也不计入分母——路由错误只体现在路由决策指标上，不会雪崩式拉低记忆模块的数字。
+
+#### Trace 结构
+
+一条用例的轨迹由事件流组成，覆盖六组信息：
+
+| 节点 | 事件 | 字段 |
+| --- | --- | --- |
+| 感知 | `module.perception` | `hit`、`skill`、`intent`、`duration_ms` |
+| 规划 | `module.planning` | `duration_ms`（另含 `route` / `tools`） |
+| 记忆 | `module.memory` | `duration_ms`、`turns`（另含 `injected`） |
+| 工具 | `tool_call` | `target`、`args`、`ok`、`error_kind`、`attempts`、`duration_ms` |
+| RAG | `module.retrieval` | `duration_ms`、`count`、`chunks` |
+| 模型消耗 | `model.usage` | `model_calls`、`input_tokens`、`output_tokens` |
+
+工具调用与模型消耗由**平台记账**（Agent 回报或平台代执行）；感知/规划/记忆/RAG 是 Agent 内部信息，由 Agent 通过 bridge 的 `signals` 上报。缺哪项，哪项就不出现在报告里，不补零。
+
+#### 运行时指标落数
+
+记分卡不再只是「声明指标」，而是把轨迹里的数据落成数字：
+
+- **模块级延迟**：工具调用耗时有两个来源——平台代执行时由**平台自动测量**；Agent 自带工具时由 **Agent 在回报的调用里带上 `duration_ms`**。其余（感知/规划/记忆/检索）由 `module.*` 信号的 `duration_ms` 聚合出 `intent_latency`、`planning_latency`、`memory_injection_latency`、`retrieval_latency`、`tool_latency`，连同 `e2e_latency` 一起给出均值与 p50/p95。没有数据的指标不出现在报告里，不臆造零值。
+- **模型调用次数**：agent 在 bridge 的 `usage` 里上报 `model_calls`，平台贯通 `TokenUsage → CaseMetrics → 运行指标 → 记分卡`，成本栏展示 `model_calls`。
 
 ## Judge Task（结构化裁判任务）
 
-裁判校准回答「这个裁判靠不靠谱」，Judge Task 回答「这条用例的这个指标到底达没达标」。参考文章第 5 节，平台把逐指标判定拆成结构化的裁判任务：**一个任务只评一个指标**，裁判返回**严格 JSON**（先 `reasoning` 后结论），平台校验字段后折算成通过或不通过；无法解析或字段不合法判为 `error`，绝不静默通过。
+裁判校准回答「这个裁判靠不靠谱」，Judge Task 回答「这条用例的这个指标到底达没达标」。平台把逐指标判定拆成结构化的裁判任务：**一个任务只评一个指标**，裁判返回**严格 JSON**（先 `reasoning` 后结论），平台校验字段后折算成通过或不通过；无法解析或字段不合法判为 `error`，绝不静默通过。
 
-六种任务类型覆盖文章的指标集：
+六种任务类型覆盖主要的指标集：
 
 | 类型 | 裁判结论字段 | 典型指标 |
 | --- | --- | --- |
@@ -941,13 +880,40 @@ python -m agenteval --home .agenteval judge task \
 python -m agenteval --home .agenteval report
 ```
 
-三条与文章一致的口径：
+三条口径：
 
 - **单一职责**。一个任务只评一个指标，结论只落到这一个指标上，避免混合任务互相稀释。
 - **结构化输出必须可解析**。裁判返回非 JSON、缺 `reasoning`、标签越界、分数越界都会判为 `error`，而不是猜一个结论。
 - **上游错误跳过下游指标**。路由误触发时，依赖检索证据的指标（忠实性、检索精确率/召回率）标记为 `skipped`，既不计入分子也不计入分母；其余指标照常判定。
 
 逐条结论以既有断言的 `metric` 与 `skipped` 承载，因此运行记录格式不变，记分卡、门禁与控制台无需改动即可消费。
+
+#### 裁判在引擎内执行
+
+`eval run` 可以带 `--judge`：按评测范围自动装配裁判任务（`--judge-tasks` 可覆盖），对每条用例把 **Agent 输出 + EvalTrace** 交给裁判，逐指标结论并入同一份运行记录，记分卡直接消费——不必再手工跑 `judge task`。
+
+```bash
+python -m agenteval --home .agenteval eval run \
+  --scope end_to_end --datasets examples/eval_datasets.json \
+  --agents examples/self_contained.agents.json --agent @self-contained \
+  --judge examples/demo_judge_tasks.py:build_keyword_judge \
+  --judge-tasks examples/eval_judge_tasks.json
+```
+
+#### 轨迹感知的裁判
+
+裁判不只看输出文本。`judge task --run <run_id>` 会把该运行轨迹里的中间数据一并交给裁判：
+
+```bash
+python -m agenteval --home .agenteval judge task \
+  --cases examples/judge_task_cases.json \
+  --tasks examples/judge_tasks.json \
+  --run <run_id> \
+  --judge examples/demo_judge_tasks.py:build_keyword_judge
+```
+
+平台从轨迹抽取命中 Skill、路由方向、调用过的工具、检索片段与各段耗时（`evidence_from_trace`）；用例声明了 `expected_route` 而实际路由不符时，按 §5.4 跳过依赖检索证据的下游指标。
+
 ## 裁判校准
 
 回答质量这类维度没有确定性判据，只能由裁判给分。但裁判本身是需要被验证的测量仪器——未经校准的裁判分不能进质量门禁。
@@ -1025,39 +991,6 @@ runs: 12  home: .agenteval
 
 字段缺失时省略区块而不是填零——不同版本的运行记录字段不一定齐全，填零会让人误以为「真的没有成本」。
 
-### 界面开发
-
-前端在 `web/`，用 React + Vite：
-
-```bash
-cd web
-npm install
-npm run build      # 产物写入 src/agenteval/console/dist/，随包分发
-```
-
-构建产物提交进仓库，CI 会重新构建并比对差异，因此改完前端必须一并提交 `dist/`。
-
-## 在 pytest 里运行
-
-```bash
-python -m pytest
-```
-
-也可以直接调用运行器，把契约用例纳入既有测试套件：
-
-```python
-from agenteval.runner import ContractRunner, load_cases
-from agenteval.store import RunStore
-from mytools import build_registry
-
-
-def test_tool_contracts(tmp_path):
-    runner = ContractRunner(registry=build_registry(), store=RunStore(tmp_path / "runs"))
-    run = runner.run(load_cases("my_cases.json"))
-    assert run.summary.failed == 0
-    assert run.summary.errored == 0
-```
-
 ## 已知限制
 
 - 超时用线程执行器实现，无法强制中断阻塞中的原生调用；被测 agent 应提供可中断实现。
@@ -1073,12 +1006,3 @@ def test_tool_contracts(tmp_path):
 - 沙箱以 compose 项目为单位，只做数据卷级快照，不做容器进程级快照（CRIU）；同一沙箱同一时间只允许一轮运行，并发调度不在范围内。
 - 脱敏只覆盖顶层字段，嵌套结构内的敏感值需在 agent 侧处理。
 
-## 规格来源
-
-本项目的设计基线在 `openspec/`：`specs/` 是已归档的能力规格，`changes/archive/` 保留每次变更的 proposal、design 与 tasks。
-
-```bash
-openspec list --specs                    # 能力清单
-openspec show tool-contract-eval --type spec   # 某一条能力规格
-openspec validate --all --strict         # 全量校验
-```
