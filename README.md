@@ -66,14 +66,44 @@ python -m agenteval show <run_id>
 
 被测 agent 不必是 Python，也不必跑在平台进程里。平台用一份 JSON wire 协议与 agent 通信，传输可以是 HTTP endpoint 或本地子进程，agent 只需实现一个入口。
 
-平台发出的请求带有协议版本、应用标识、能力、用例数据、可用工具与对话历史；agent 返回文本输出、工具调用列表与 token 用量。同一个 endpoint 能被 task、dialogue、redteam、selection 四条链路复用，用 `capability` 区分。
+**平台不提供工具。** 工具属于 agent 自己的工具模块（MCP / Skill），由 agent 执行；平台只把「已经发生过的调用」记进轨迹，供调用顺序与多余调用断言使用。
 
-两种工具归属模式：
+平台发出的请求带协议版本、应用标识、能力、用例数据与对话历史，并通过 `context` 注入会话标识、评测模式与 Mock 数据；agent 返回文本输出、已执行的工具调用、模块信号与 token 用量。同一个 endpoint 能被 task、dialogue、redteam、selection 四条链路复用，用 `capability` 区分。
 
-| tool_mode | 谁执行工具 | 适用场景 |
-| --- | --- | --- |
-| `platform` | 平台执行并把结果回传给 agent，驱动多步循环 | agent 只做决策，环境由评测提供 |
-| `agent` | agent 自己执行，只回报调用记录供过程断言 | 生产 agent 自带工具 |
+```json
+// 请求（平台 → agent）
+{
+  "protocol": "agenteval.bridge/1",
+  "app": "ledger-agent",
+  "version": "1.2.0",
+  "capability": "task",
+  "case": { "id": "T-001", "user_input": "帮我把 30 元扣款并结算" },
+  "tools": [],
+  "messages": [{ "role": "user", "content": "帮我把 30 元扣款并结算" }],
+  "context": { "session_id": "T-001", "eval_mode": "e2e_real", "mock": {} }
+}
+```
+
+```json
+// 响应（agent → 平台）
+{
+  "protocol": "agenteval.bridge/1",
+  "output": "已扣款 30 元并完成结算，账本余额 30 元。",
+  "tool_calls": [
+    { "name": "ledger_tool", "arguments": { "op": "charge", "amount": 30 },
+      "ok": true, "duration_ms": 12.5 }
+  ],
+  "signals": [
+    { "module": "perception", "payload": { "hit": true, "skill": "ledger-skill", "intent": "charge" }, "duration_ms": 14 },
+    { "module": "planning",   "payload": { "route": "skill_hit" }, "duration_ms": 5 },
+    { "module": "memory",     "payload": { "turns": 1 }, "duration_ms": 2 },
+    { "module": "retrieval",  "payload": { "count": 2, "chunks": [{ "id": "c1" }] }, "duration_ms": 9 }
+  ],
+  "usage": { "input_tokens": 120, "output_tokens": 40, "model_calls": 2 }
+}
+```
+
+四个 `module` 取值是 `perception` / `planning` / `memory` / `retrieval`（工具调用单独走 `tool_calls`）；`usage` 汇总模型调用次数与输入输出 Token。缺哪项就少哪项指标，平台不补零。
 
 ### 注册多个 agent
 
@@ -88,8 +118,7 @@ python -m agenteval show <run_id>
       "transport": "subprocess",
       "command": "python",
       "args": ["examples/agents/ledger_agent.py"],
-      "capabilities": ["task"],
-      "tool_mode": "platform"
+      "capabilities": ["task"]
     },
     {
       "id": "support-agent",
@@ -97,7 +126,7 @@ python -m agenteval show <run_id>
       "transport": "http",
       "url": "http://127.0.0.1:9210/eval",
       "capabilities": ["dialogue", "selection", "redteam"],
-      "tool_mode": "platform"
+      "timeout_s": 20
     }
   ]
 }
@@ -107,13 +136,11 @@ python -m agenteval show <run_id>
 # 端到端任务，走子进程 agent
 python -m agenteval --agents examples/agents.json task run \
   --tasks examples/tasks.json \
-  --registry agenteval.fakes:build_task_registry \
   --agent @ledger-agent
 
 # 多轮对话，走 HTTP agent（需先启动 examples/agents/http_support_agent.py）
 python -m agenteval --agents examples/agents.json dialogue run \
   --cases examples/dialogue_cases.json \
-  --registry agenteval.fakes:build_demo_registry \
   --agent @support-agent
 ```
 
@@ -127,9 +154,9 @@ python -m agenteval --agents examples/agents.json dialogue run \
 
 一次针对注册表 agent 的运行，结论里会带上 `app` 与 `app_version`，因此能回答「测的是哪个应用的哪个版本」。
 
-### 自带工具与审计的 agent
+### 接入已有后端
 
-很多生产 agent 的工具、会话与调用审计都在它自己的后端里，平台既不该也拿不到那些工具。这类 agent 用 `tool_mode: agent` 接入：它自行执行工具，把「已经发生过」的调用回报给平台，平台不重复执行，只记入该用例的轨迹，于是调用顺序与多余调用断言照常可用。
+很多生产 agent 的工具、会话与调用审计都在它自己的后端里，平台既不该也拿不到那些工具——`tool_calls` 与 `signals` 就是为这种情况准备的：agent 把已经发生过的调用与各模块的执行信息回报上来即可。
 
 `bridges/` 用来放这类适配桥。仓库里带了一个模板 `bridges/http_agent.py`，走的是「登录 → 建会话 → 发消息 → 拉动作记录」这套常见形状；换成你自己的系统时，只改其中四个函数里的路径与字段名即可，平台内核不用动。
 
@@ -142,7 +169,6 @@ python -m agenteval --agents examples/agents.json dialogue run \
   "args": ["bridges/http_agent.py"],
   "env": { "AGENT_BASE_URL": "http://127.0.0.1:8080" },
   "capabilities": ["task"],
-  "tool_mode": "agent",
   "timeout_s": 240
 }
 ```
@@ -151,7 +177,6 @@ python -m agenteval --agents examples/agents.json dialogue run \
 python -m agenteval --home .agenteval --agents examples/http_agent.agents.json \
   task run \
   --tasks my_tasks.json \
-  --registry agenteval.fakes:build_task_registry \
   --agent @http-agent
 ```
 
@@ -783,16 +808,16 @@ python -m agenteval --home .agenteval gate --min-pass-rate 1.0
 python -m agenteval --home .agenteval eval run \
   --scope end_to_end \
   --datasets examples/eval_datasets.json \
-  --registry agenteval.fakes:build_agent_registry \
-  --agent examples/demo_eval_agent.py:build_agent \
+  --agents examples/self_contained.agents.json \
+  --agent @self-contained \
   --concurrency 1 --timeout 120 --retries 2
 ```
 
 任务与多轮对话的检查可以声明 `metric`，判定会带上该指标，记分卡因此按文章那套指标（`task_completion`、`multi_turn_completion`、`tool_call_accuracy` 等）聚合，而不是回退到断言名。
 
-工具默认属于 **Agent 自己的工具模块**（MCP / Skill）：`eval run` 可以完全不提供工具环境，Agent 用它自己的工具完成任务，并把「已经执行过的调用」回报给平台记账；平台不派发工具、也不代执行。需要「平台提供受控环境并代执行工具」时，才显式给 `--registry`/`--demo`。
+工具属于 **Agent 自己的工具模块**（MCP / Skill）：`eval run` **不接受任何工具环境参数**，Agent 用它自己的工具完成任务，并把「已经执行过的调用」（工具名、参数、是否成功、耗时）回报给平台记账；平台不派发工具、也不代执行。
 
-`eval run` 走的是文章 §6.1 的那条链路：**评测用例 → 交给 Agent → 采集轨迹 → 交裁判**。因此它只执行 **agent 用例**——单轮任务（`TaskCase`）与多轮对话（`DialogueCase`），并强制要求 `--agent`。平台还支持「直接调用工具、不经 agent」的契约与过程用例，那类用例属于另外一层能力，用 `run` 跑，`eval run` 会明确拒收。
+`eval run` 走的是文章 §6.1 的那条链路：**评测用例 → 交给 Agent → 采集轨迹 → 交裁判**。因此它只执行 **agent 用例**——单轮任务（`TaskCase`）与多轮对话（`DialogueCase`），并强制要求 `--agent`。平台上还有「直接调用工具、不经 agent」的契约与过程用例（工具契约测试那一层），那类用例用 `run` 跑，`eval run` 会明确拒收。
 
 ```
 eval plan: end_to_end  eval_mode: e2e_real
@@ -833,8 +858,7 @@ scorecard: …（质量 × 成本 × 性能三栏）
 ```bash
 python -m agenteval --home .agenteval eval run \
   --scope end_to_end --datasets examples/eval_datasets.json \
-  --registry agenteval.fakes:build_agent_registry \
-  --agent examples/demo_eval_agent.py:build_agent \
+  --agents examples/self_contained.agents.json --agent @self-contained \
   --judge examples/demo_judge_tasks.py:build_keyword_judge \
   --judge-tasks examples/eval_judge_tasks.json
 ```
